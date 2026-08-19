@@ -15,6 +15,7 @@ const CARD_WIDTH = 340;
 const CARD_HEIGHT = 320;
 const CARD_ROW_HEIGHT = 42;
 const VISIBLE_CARD_ROWS = 6;
+const VIEW_PADDING = [76, 54, 54, 54];
 
 function truncateText(value: string, maxLength: number): string {
   const characters = Array.from(value);
@@ -63,9 +64,12 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
 ) {
   const containerRef = useRef<HTMLDivElement>(null);
   const graphRef = useRef<G6Graph | null>(null);
+  const selectedTableRef = useRef(selectedTableId);
   const previousSelectedRef = useRef<string | undefined>(undefined);
   const [rendering, setRendering] = useState(true);
   const scopeRoot = viewMode === "related" ? selectedTableId : undefined;
+
+  selectedTableRef.current = selectedTableId;
 
   const visibleData = useMemo(() => {
     const ids = viewMode === "related" ? relatedIds(schema, scopeRoot) : new Set(schema.tables.map((table) => table.id));
@@ -78,7 +82,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
   }, [schema, scopeRoot, viewMode]);
 
   useImperativeHandle(forwardedRef, () => ({
-    fit: () => void graphRef.current?.fitView({ when: "overflow" }, { duration: 280 }),
+    fit: () => void graphRef.current?.fitView({ when: "always" }, { duration: 280 }),
     zoomIn: () => void graphRef.current?.zoomBy(1.28, { duration: 180 }),
     zoomOut: () => void graphRef.current?.zoomBy(0.78, { duration: 180 }),
     focus: (tableId: string) => {
@@ -344,8 +348,8 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
       const graph = new Graph({
         container: containerRef.current,
         animation: false,
-        autoFit: { type: "view", options: { when: "overflow" } },
-        padding: 54,
+        autoFit: { type: "view", options: { when: "always" } },
+        padding: VIEW_PADDING,
         zoomRange: [0.025, 4],
         data: {
           nodes: graphNodes,
@@ -473,6 +477,13 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
         })),
       );
       await graph.draw();
+      if (cancelled) return;
+
+      const currentSelectedTableId = selectedTableRef.current;
+      if (currentSelectedTableId && graph.getElementData(currentSelectedTableId)) {
+        await graph.setElementState(currentSelectedTableId, ["selected"]);
+      }
+      previousSelectedRef.current = currentSelectedTableId;
       if (!cancelled) setRendering(false);
 
       resizeObserver = new ResizeObserver(([entry]) => {
