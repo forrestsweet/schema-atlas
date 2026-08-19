@@ -39,6 +39,29 @@ Schema Atlas 不连接数据库。DDL、解析结果和 AI 会话保存在浏览
 
 要求：Node.js 20+。
 
+无需安装，直接运行：
+
+```bash
+npx schema-atlas@latest
+```
+
+命令会自动选择可用端口、启动本地服务并打开浏览器。也可以全局安装：
+
+```bash
+npm install -g schema-atlas
+schema-atlas
+```
+
+常用参数：
+
+```bash
+schema-atlas --port 4173
+schema-atlas --host 0.0.0.0
+schema-atlas --no-open
+```
+
+从源码开发：
+
 ```bash
 git clone https://github.com/forrestsweet/schema-atlas.git
 cd schema-atlas
@@ -46,7 +69,7 @@ npm install
 npm run dev
 ```
 
-打开 [http://localhost:3000](http://localhost:3000)，粘贴或选择一份 MySQL DDL 文件。
+打开终端中显示的本地地址，粘贴或选择一份 MySQL DDL 文件。
 
 ## Schema Copilot
 

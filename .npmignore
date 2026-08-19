@@ -1,0 +1,6 @@
+.next/cache/
+.next/dev/
+.next/diagnostics/
+.next/trace
+.next/trace-build
+.next/turbopack/

@@ -1,13 +1,48 @@
 {
   "name": "schema-atlas",
   "version": "0.1.0",
-  "private": true,
+  "description": "Local-first MySQL schema visualization and AI analysis",
+  "bin": {
+    "schema-atlas": "bin/schema-atlas.mjs"
+  },
+  "files": [
+    ".next",
+    "bin",
+    "next.config.ts",
+    "public",
+    "README.md",
+    "README_EN.md",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "keywords": [
+    "mysql",
+    "schema",
+    "ddl",
+    "visualization",
+    "database",
+    "ai-agent"
+  ],
+  "homepage": "https://github.com/forrestsweet/schema-atlas#readme",
+  "bugs": {
+    "url": "https://github.com/forrestsweet/schema-atlas/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/forrestsweet/schema-atlas.git"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "generate:large-schema": "node scripts/generate-large-schema.mjs"
+    "generate:large-schema": "node scripts/generate-large-schema.mjs",
+    "prepack": "npm run build && node scripts/prepare-package.mjs"
   },
   "dependencies": {
     "@antv/g6": "^5.1.1",

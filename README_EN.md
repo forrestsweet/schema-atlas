@@ -39,6 +39,29 @@ Schema Atlas never connects to your database. DDL, parsed schemas, and AI conver
 
 Requires Node.js 20+.
 
+Run without installing:
+
+```bash
+npx schema-atlas@latest
+```
+
+The command selects an available port, starts the local server, and opens your browser. Or install it globally:
+
+```bash
+npm install -g schema-atlas
+schema-atlas
+```
+
+Common options:
+
+```bash
+schema-atlas --port 4173
+schema-atlas --host 0.0.0.0
+schema-atlas --no-open
+```
+
+For source development:
+
 ```bash
 git clone https://github.com/forrestsweet/schema-atlas.git
 cd schema-atlas
@@ -46,7 +69,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000), then paste or select a MySQL DDL file.
+Open the local URL printed in your terminal, then paste or select a MySQL DDL file.
 
 ## Schema Copilot
 
