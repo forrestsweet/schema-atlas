@@ -7,6 +7,7 @@ const buildDirectory = new URL("../.next/", import.meta.url);
 const disposablePaths = [
   "build",
   "cache",
+  "dev",
   "diagnostics",
   "trace",
   "trace-build",
