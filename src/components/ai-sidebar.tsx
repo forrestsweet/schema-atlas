@@ -7,12 +7,22 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import { usePiRuntime, usePiSession } from "@assistant-ui/react-pi";
-import { ArrowLeft, History, Settings2, Sparkles, X } from "lucide-react";
+import {
+  usePiRuntime,
+  usePiRuntimeExtras,
+  usePiSession,
+  type PiModelInfo as AssistantUiPiModelInfo,
+  type PiThinkingLevel as AssistantUiPiThinkingLevel,
+} from "@assistant-ui/react-pi";
+import { ArrowLeft, History, Settings2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { SchemaThreadList } from "@/components/assistant-ui/schema-thread-list";
 import { Thread } from "@/components/assistant-ui/thread";
+import {
+  ModelSelector,
+  type ModelOption,
+} from "@/components/assistant-ui/model-selector";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -43,6 +53,28 @@ type Props = {
   selectedTableName?: string;
   workspaceId: string;
 };
+
+type PiThinkingLevel = AssistantUiPiThinkingLevel | "max";
+type PiModelInfo = Omit<
+  AssistantUiPiModelInfo,
+  "availableThinkingLevels"
+> & {
+  availableThinkingLevels?: readonly PiThinkingLevel[];
+};
+
+const THINKING_LEVEL_LABELS: Record<PiThinkingLevel, string> = {
+  high: "高",
+  low: "低",
+  max: "最高",
+  medium: "中",
+  minimal: "最少",
+  off: "关闭",
+  xhigh: "极高",
+};
+
+const modelSelectionId = (
+  model: Pick<PiModelInfo, "provider" | "modelId">,
+) => `${model.provider}/${model.modelId}`;
 
 function SchemaWelcome({ selectedTableName }: { selectedTableName?: string }) {
   return (
@@ -87,6 +119,162 @@ function ThreadBootstrap() {
   }, [aui, isThreadListLoading, threadId, threadStatus]);
 
   return null;
+}
+
+function SchemaComposerModelSelector({
+  client,
+  configurationRevision,
+}: {
+  client: SchemaPiClient;
+  configurationRevision: number;
+}) {
+  const session = usePiSession();
+  const { setModel, setThinkingLevel, status } = usePiRuntimeExtras();
+  const [models, setModels] = useState<PiModelInfo[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let active = true;
+    void client.getAvailableModels().then(
+      (availableModels) => {
+        if (!active) return;
+        setModels(availableModels as PiModelInfo[]);
+        setLoading(false);
+      },
+      (error: unknown) => {
+        if (!active) return;
+        console.error("无法读取 Pi 模型列表", error);
+        setModels([]);
+        setLoading(false);
+      },
+    );
+    return () => {
+      active = false;
+    };
+  }, [client, configurationRevision]);
+
+  const selection =
+    session?.config?.provider && session.config.modelId
+      ? {
+          modelId: session.config.modelId,
+          provider: session.config.provider,
+        }
+      : undefined;
+  const selectedModel = selection
+    ? models.find(
+        (model) =>
+          model.provider === selection.provider &&
+          model.modelId === selection.modelId,
+      )
+    : undefined;
+  const availableThinkingLevels = selectedModel?.availableThinkingLevels;
+  const sessionThinking = session?.config?.thinkingLevel as
+    | PiThinkingLevel
+    | undefined;
+  const thinking =
+    sessionThinking && availableThinkingLevels?.includes(sessionThinking)
+      ? sessionThinking
+      : undefined;
+  const modelOptions: ModelOption[] = models.map((model) => ({
+    description: model.provider,
+    id: modelSelectionId(model),
+    keywords: [model.modelId, model.provider],
+    name: model.name ?? model.modelId,
+    ...(model.availableThinkingLevels &&
+    model.availableThinkingLevels.length > 1
+      ? {
+          efforts: model.availableThinkingLevels.map((level) => ({
+            id: level,
+            name: THINKING_LEVEL_LABELS[level],
+          })),
+        }
+      : undefined),
+  }));
+  const providerGroups = models.reduce<
+    { models: PiModelInfo[]; provider: string }[]
+  >((groups, model) => {
+    const current = groups.find((group) => group.provider === model.provider);
+    if (current) current.models.push(model);
+    else groups.push({ models: [model], provider: model.provider });
+    return groups;
+  }, []);
+  const searchable = models.length > 8;
+
+  return (
+    <ModelSelector.Root
+      effort={thinking}
+      models={modelOptions}
+      onEffortChange={(value) => {
+        if (
+          status === "running" ||
+          !availableThinkingLevels?.includes(value as PiThinkingLevel)
+        ) {
+          return;
+        }
+        void setThinkingLevel(value as AssistantUiPiThinkingLevel).catch(
+          (error: unknown) => console.error("无法切换 Pi 思考级别", error),
+        );
+      }}
+      onValueChange={(value) => {
+        const model = models.find(
+          (candidate) => modelSelectionId(candidate) === value,
+        );
+        if (!model || status === "running") return;
+        void setModel({
+          modelId: model.modelId,
+          provider: model.provider,
+        }).catch((error: unknown) => console.error("无法切换 Pi 模型", error));
+      }}
+      value={selectedModel ? modelSelectionId(selectedModel) : undefined}
+    >
+      <ModelSelector.Trigger
+        aria-label={
+          selection ? `已选择模型：${selection.modelId}` : "选择模型"
+        }
+        className="h-7 max-w-40 px-2 text-sm"
+        disabled={loading || status === "running"}
+        size="sm"
+        variant="ghost"
+      >
+        <ModelSelector.Value
+          placeholder={loading ? "正在加载模型…" : "选择模型"}
+          showEffort={false}
+        />
+      </ModelSelector.Trigger>
+      <ModelSelector.Content
+        align="end"
+        className="w-80 max-w-[calc(100vw-2rem)]"
+        searchable={searchable}
+        side="top"
+      >
+        {searchable ? <ModelSelector.Search placeholder="搜索模型…" /> : null}
+        <ModelSelector.List className="max-h-64 overflow-y-auto">
+          <ModelSelector.Empty>没有匹配的模型</ModelSelector.Empty>
+          {providerGroups.map((group) => (
+            <ModelSelector.Group heading={group.provider} key={group.provider}>
+              {group.models.map((model) => (
+                <ModelSelector.Item
+                  className="h-8 items-center gap-2 rounded-md py-0 ps-2.5"
+                  key={modelSelectionId(model)}
+                  model={{
+                    description: model.provider,
+                    id: modelSelectionId(model),
+                    keywords: [model.modelId, model.provider],
+                    name: model.name ?? model.modelId,
+                  }}
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    {model.name ?? model.modelId}
+                  </span>
+                </ModelSelector.Item>
+              ))}
+            </ModelSelector.Group>
+          ))}
+        </ModelSelector.List>
+        <ModelSelector.Effort label="思考级别" />
+      </ModelSelector.Content>
+    </ModelSelector.Root>
+  );
 }
 
 function ModelDialog({
@@ -324,7 +512,6 @@ export function AiSidebar({ context, onClose, selectedTableName, workspaceId }: 
   const [historyOpen, setHistoryOpen] = useState(false);
   const [configurationRevision, setConfigurationRevision] = useState(0);
   const configured = client.isConfigured();
-  void configurationRevision;
 
   return (
     <AssistantRuntimeProvider runtime={runtime} config={assistantConfig}>
@@ -332,27 +519,22 @@ export function AiSidebar({ context, onClose, selectedTableName, workspaceId }: 
       <ThreadTitleSync />
       <aside className="flex h-full min-h-0 flex-col bg-background">
         <header className="flex h-12 shrink-0 items-center border-b px-3">
-          <div className="flex flex-1 items-center gap-2 text-sm font-medium">
-            {historyOpen ? (
-              <>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="-ml-2 size-8"
-                  aria-label="返回对话"
-                  onClick={() => setHistoryOpen(false)}
-                >
-                  <ArrowLeft />
-                </Button>
-                历史会话
-              </>
-            ) : (
-              <>
-                <Sparkles className="size-4" />
-                Schema Copilot
-              </>
-            )}
-          </div>
+          {historyOpen ? (
+            <div className="flex flex-1 items-center gap-2 text-sm font-medium">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="-ml-2 size-8"
+                aria-label="返回对话"
+                onClick={() => setHistoryOpen(false)}
+              >
+                <ArrowLeft />
+              </Button>
+              历史会话
+            </div>
+          ) : (
+            <div className="flex-1" />
+          )}
           {!historyOpen ? (
             <Button
               variant="ghost"
@@ -389,7 +571,19 @@ export function AiSidebar({ context, onClose, selectedTableName, workspaceId }: 
           {historyOpen ? (
             <SchemaThreadList onSelect={() => setHistoryOpen(false)} />
           ) : configured ? (
-            <Thread components={{ Welcome: () => <SchemaWelcome selectedTableName={selectedTableName} /> }} />
+            <Thread
+              components={{
+                ComposerModelSelector: (
+                  <SchemaComposerModelSelector
+                    client={client}
+                    configurationRevision={configurationRevision}
+                  />
+                ),
+                Welcome: () => (
+                  <SchemaWelcome selectedTableName={selectedTableName} />
+                ),
+              }}
+            />
           ) : (
             <div className="flex h-full items-center justify-center">
               <Button onClick={() => setSettingsOpen(true)}>配置模型</Button>

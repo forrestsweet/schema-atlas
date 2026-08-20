@@ -9,7 +9,11 @@ import {
   type StreamFn,
 } from "@earendil-works/pi-agent-core";
 import { streamSimple as streamOpenAICompletions } from "@earendil-works/pi-ai/api/openai-completions";
-import type { Api, Model } from "@earendil-works/pi-ai";
+import {
+  getSupportedThinkingLevels,
+  type Api,
+  type Model,
+} from "@earendil-works/pi-ai";
 import type {
   PiAssistantMessageDelta,
   PiClient,
@@ -594,17 +598,13 @@ export class SchemaPiClient implements PiClient {
       const provider = getPiBuiltinProvider(this.connection.provider);
       return (
         provider?.getModels().map((model) => {
-          const configured = piBuiltinProviders
-            .find((candidate) => candidate.id === provider.id)
-            ?.models.find((candidate) => candidate.id === model.id);
+          const levels = getSupportedThinkingLevels(model) as PiThinkingLevel[];
           return {
-            availableThinkingLevels: configured?.supportsThinking
-              ? (["off", "minimal", "low", "medium", "high"] as PiThinkingLevel[])
-              : (["off"] as PiThinkingLevel[]),
+            availableThinkingLevels: levels,
             modelId: model.id,
             name: model.name,
             provider: model.provider,
-            supportsThinking: configured?.supportsThinking ?? false,
+            supportsThinking: levels.length > 1,
           };
         }) ?? []
       );

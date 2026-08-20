@@ -48,6 +48,29 @@ type Props = {
   onSelectTable: (tableId: string) => void;
 };
 
+type SchemaWheelEvent = {
+  ctrlKey?: boolean;
+  deltaY?: number;
+  metaKey?: boolean;
+  target?: { id?: string };
+  targetType?: string;
+};
+
+function canScrollTableCard(graph: G6Graph, event: SchemaWheelEvent): boolean {
+  if (event.targetType !== "node" || event.ctrlKey || event.metaKey) return false;
+  const id = String(event.target?.id || "");
+  if (!id) return false;
+
+  const node = graph.getNodeData(id);
+  const rows = Array.isArray(node.data?.rows) ? node.data.rows : [];
+  const maxOffset = Math.max(0, rows.length - VISIBLE_CARD_ROWS);
+  const direction = Math.sign(event.deltaY || 0);
+  if (!maxOffset || !direction) return false;
+
+  const current = Math.min(Math.max(Number(node.data?.scrollOffset || 0), 0), maxOffset);
+  return direction < 0 ? current > 0 : current < maxOffset;
+}
+
 function relatedIds(schema: SchemaModel, rootId?: string): Set<string> {
   if (!rootId) return new Set(schema.tables.map((table) => table.id));
   const ids = new Set([rootId]);
@@ -436,7 +459,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
           "drag-canvas",
           {
             type: "zoom-canvas",
-            enable: (event: { targetType?: string }) => event.targetType !== "node",
+            enable: (event: SchemaWheelEvent) => !canScrollTableCard(graph, event),
           },
           "drag-element",
           "click-select",
@@ -449,21 +472,14 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
       });
 
       graph.on(CommonEvent.WHEEL, (event) => {
-        const wheelEvent = event as unknown as {
-          deltaY?: number;
-          target?: { id?: string };
-          targetType?: string;
-        };
-        if (wheelEvent.targetType !== "node") return;
+        const wheelEvent = event as unknown as SchemaWheelEvent;
+        if (!canScrollTableCard(graph, wheelEvent)) return;
         const id = String(wheelEvent.target?.id || "");
-        if (!id) return;
         const node = graph.getNodeData(id);
         const rows = Array.isArray(node.data?.rows) ? node.data.rows : [];
         const maxOffset = Math.max(0, rows.length - VISIBLE_CARD_ROWS);
-        if (!maxOffset) return;
         const current = Math.min(Math.max(Number(node.data?.scrollOffset || 0), 0), maxOffset);
         const next = Math.min(Math.max(current + Math.sign(wheelEvent.deltaY || 0), 0), maxOffset);
-        if (next === current) return;
         graph.updateNodeData([{ id, data: { scrollOffset: next } }]);
         void graph.draw();
       });
