@@ -181,7 +181,12 @@ function ModelDialog({
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="选择提供商" />
               </SelectTrigger>
-              <SelectContent align="start" side="bottom" className="max-h-72">
+              <SelectContent
+                position="popper"
+                align="start"
+                side="bottom"
+                sideOffset={4}
+              >
                 {piBuiltinProviders.map((provider) => (
                   <SelectItem key={provider.id} value={provider.id}>
                     {provider.name}
@@ -228,7 +233,12 @@ function ModelDialog({
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="选择模型" />
                 </SelectTrigger>
-                <SelectContent align="start" side="bottom" className="max-h-72">
+                <SelectContent
+                  position="popper"
+                  align="start"
+                  side="bottom"
+                  sideOffset={4}
+                >
                   {selectedProvider?.models.map((model) => (
                     <SelectItem key={model.id} value={model.id}>
                       {model.name}
@@ -359,6 +369,7 @@ export function AiSidebar({ context, onClose, selectedTableName, workspaceId }: 
             size="icon"
             className="size-8"
             aria-label="模型配置"
+            title="模型配置"
             onClick={() => setSettingsOpen(true)}
           >
             <Settings2 />
