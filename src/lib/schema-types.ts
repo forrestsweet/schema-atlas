@@ -38,9 +38,39 @@ export type SchemaRelationship = {
   onUpdate?: string;
 };
 
+export type DiscoveredRelationshipStatus =
+  | "candidate"
+  | "confirmed"
+  | "rejected";
+
+export type DiscoveredRelationshipCardinality =
+  | "one-to-one"
+  | "one-to-many"
+  | "many-to-one"
+  | "many-to-many";
+
+export type DiscoveredRelationshipConfidence = "high" | "medium" | "low";
+
+export type SchemaDiscoveredRelationship = {
+  id: string;
+  sourceTableId: string;
+  sourceColumns: string[];
+  targetTableId: string;
+  targetColumns: string[];
+  cardinality: DiscoveredRelationshipCardinality;
+  optional: boolean;
+  confidence: DiscoveredRelationshipConfidence;
+  explanation: string;
+  evidence: string[];
+  origin: "ai" | "manual";
+  status: DiscoveredRelationshipStatus;
+  createdAt: string;
+};
+
 export type SchemaModel = {
   tables: SchemaTable[];
   relationships: SchemaRelationship[];
+  discoveredRelationships?: SchemaDiscoveredRelationship[];
   warnings: string[];
   stats: {
     tableCount: number;
@@ -48,6 +78,14 @@ export type SchemaModel = {
     relationshipCount: number;
     parseMs: number;
   };
+};
+
+export type SchemaCanvasLayoutPlan = {
+  lanes: Array<{
+    name: string;
+    tableIds: string[];
+  }>;
+  summary?: string;
 };
 
 export type WorkerParseRequest = {

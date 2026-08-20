@@ -15,18 +15,26 @@ import {
   ClipboardPaste,
   Focus,
   GitFork,
+  Loader2,
   Maximize2,
   Pencil,
   Search,
   Sparkles,
   Trash2,
   Upload,
+  WandSparkles,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
 import dynamic from "next/dynamic";
-import { SchemaGraph, type GraphViewMode, type SchemaGraphHandle } from "@/components/schema-graph";
+import {
+  SchemaGraph,
+  type GraphViewMode,
+  type RelationshipEndpoint,
+  type SchemaGraphHandle,
+} from "@/components/schema-graph";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import {
   Dialog,
@@ -62,7 +70,12 @@ import {
   type SchemaDocument,
 } from "@/lib/schema-store";
 import { cn } from "@/lib/utils";
-import type { SchemaModel, WorkerParseResponse } from "@/lib/schema-types";
+import type {
+  SchemaCanvasLayoutPlan,
+  SchemaDiscoveredRelationship,
+  SchemaModel,
+  WorkerParseResponse,
+} from "@/lib/schema-types";
 
 const AiSidebar = dynamic(
   () => import("@/components/ai-sidebar").then((module) => module.AiSidebar),
@@ -76,16 +89,53 @@ type PendingImport = {
   sql: string;
 };
 
-function IconControl({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+type AiActionRequest = {
+  id: string;
+  prompt: string;
+};
+
+function IconControl({
+  children,
+  disabled = false,
+  label,
+  onClick,
+}: {
+  children: React.ReactNode;
+  disabled?: boolean;
+  label: string;
+  onClick: () => void;
+}) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button variant="ghost" size="icon" className="size-8" onClick={onClick} aria-label={label}>{children}</Button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8"
+          disabled={disabled}
+          onClick={onClick}
+          aria-label={label}
+        >
+          {children}
+        </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom">{label}</TooltipContent>
     </Tooltip>
   );
 }
+
+const confidenceLabels = {
+  high: "高可信度",
+  medium: "中可信度",
+  low: "低可信度",
+} as const;
+
+const cardinalityLabels = {
+  "one-to-one": "一对一",
+  "one-to-many": "一对多",
+  "many-to-one": "多对一",
+  "many-to-many": "多对多",
+} as const;
 
 export default function Home() {
   const workerRef = useRef<Worker | null>(null);
@@ -111,7 +161,11 @@ export default function Home() {
   const [aiOpen, setAiOpen] = useState(false);
   const [renameOpen, setRenameOpen] = useState(false);
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [selectedRelationshipId, setSelectedRelationshipId] = useState<string>();
   const [documentName, setDocumentName] = useState("");
+  const [organizing, setOrganizing] = useState(false);
+  const [aiActionRequest, setAiActionRequest] =
+    useState<AiActionRequest>();
 
   useEffect(() => {
     schemaRef.current = schema;
@@ -227,9 +281,75 @@ export default function Home() {
     requestAnimationFrame(() => graphRef.current?.focus(tableId));
   }, []);
 
+  const selectTableFromGraph = useCallback((tableId: string) => {
+    setSelectedTableId(tableId);
+    setSelectedRelationshipId(undefined);
+  }, []);
+
   useEffect(() => {
     focusTableRef.current = selectAndFocus;
   }, [selectAndFocus]);
+
+  const organizeCanvas = useCallback(async (plan: SchemaCanvasLayoutPlan) => {
+    setOrganizing(true);
+    try {
+      await graphRef.current?.organize(plan);
+    } finally {
+      setOrganizing(false);
+    }
+  }, []);
+
+  const requestAiOrganization = useCallback(() => {
+    setAiOpen(true);
+    setAiActionRequest({
+      id: crypto.randomUUID(),
+      prompt: "帮我重新整理一下画布布局，让表和关系更容易看清。",
+    });
+  }, []);
+
+  const persistSchema = useCallback(async (nextSchema: SchemaModel) => {
+    const document = currentDocumentRef.current;
+    if (!document) throw new Error("当前没有可更新的数据库结构。");
+    const updatedDocument: SchemaDocument = {
+      ...document,
+      schema: nextSchema,
+      updatedAt: new Date().toISOString(),
+    };
+    await saveSchemaDocument(updatedDocument);
+    schemaRef.current = nextSchema;
+    currentDocumentRef.current = updatedDocument;
+    setSchema(nextSchema);
+    setCurrentDocument(updatedDocument);
+    setDocuments((current) =>
+      current.map((item) =>
+        item.id === updatedDocument.id ? updatedDocument : item,
+      ),
+    );
+  }, []);
+
+  const applyRelationships = useCallback(
+    async (relationships: SchemaDiscoveredRelationship[]) => {
+      const currentSchema = schemaRef.current;
+      if (!currentSchema) throw new Error("当前没有已导入的数据库结构。");
+      const byId = new Map(
+        (currentSchema.discoveredRelationships ?? []).map((relationship) => [
+          relationship.id,
+          relationship,
+        ]),
+      );
+      for (const relationship of relationships) {
+        byId.set(relationship.id, {
+          ...relationship,
+          status: "confirmed",
+        });
+      }
+      await persistSchema({
+        ...currentSchema,
+        discoveredRelationships: [...byId.values()],
+      });
+    },
+    [persistSchema],
+  );
 
   const schemaAgentContext = useMemo<SchemaAgentContext>(
     () => ({
@@ -237,8 +357,10 @@ export default function Home() {
       getDocumentName: () => currentDocumentRef.current?.name,
       getSchema: () => schemaRef.current,
       getSelectedTableId: () => selectedTableIdRef.current,
+      organizeCanvas,
+      applyRelationships,
     }),
-    [],
+    [applyRelationships, organizeCanvas],
   );
 
   const openDocument = (document: SchemaDocument) => {
@@ -247,6 +369,7 @@ export default function Home() {
     setSelectedTableId(undefined);
     setViewMode("all");
     setSearch("");
+    setSelectedRelationshipId(undefined);
     void setCurrentDocumentId(document.id);
   };
 
@@ -346,6 +469,113 @@ export default function Home() {
     setPastedSql("");
   };
 
+  const logicalRelationships = (schema?.discoveredRelationships ?? []).filter(
+    (relationship) => relationship.status !== "rejected",
+  );
+  const tableNames = new Map(
+    (schema?.tables ?? []).map((table) => [table.id, table.displayName]),
+  );
+  const allRelationships = [
+    ...(schema?.relationships ?? []).map((relationship) => ({
+      ...relationship,
+      kind: "constraint" as const,
+      origin: "database" as const,
+      explanation: "数据库 DDL 中显式声明的外键约束。",
+      evidence: [] as string[],
+      cardinality: undefined,
+      confidence: undefined,
+    })),
+    ...logicalRelationships.map((relationship) => ({
+      ...relationship,
+      kind: "logical" as const,
+    })),
+  ];
+  const selectedRelationship = allRelationships.find(
+    (relationship) => relationship.id === selectedRelationshipId,
+  );
+  const createManualRelationship = useCallback(async (
+    sourceEndpoint: RelationshipEndpoint,
+    targetEndpoint: RelationshipEndpoint,
+  ) => {
+    const currentSchema = schemaRef.current;
+    if (!currentSchema) return;
+    const source = currentSchema.tables.find(
+      (table) => table.id === sourceEndpoint.tableId,
+    );
+    const sourceColumn = source?.columns.find(
+      (column) => column.name === sourceEndpoint.column,
+    );
+    const target = currentSchema.tables.find(
+      (table) => table.id === targetEndpoint.tableId,
+    );
+    if (
+      !sourceColumn ||
+      !target?.columns.some((column) => column.name === targetEndpoint.column)
+    ) {
+      throw new Error("连接的字段不存在，请重新选择。");
+    }
+    const duplicate = [
+      ...currentSchema.relationships,
+      ...(currentSchema.discoveredRelationships ?? []).filter(
+        (relationship) => relationship.status !== "rejected",
+      ),
+    ].some(
+      (relationship) =>
+        relationship.sourceTableId === sourceEndpoint.tableId &&
+        relationship.targetTableId === targetEndpoint.tableId &&
+        relationship.sourceColumns.join("\u0000") === sourceEndpoint.column &&
+        relationship.targetColumns.join("\u0000") === targetEndpoint.column,
+    );
+    if (duplicate) throw new Error("这条关系已经存在。");
+    const relationship: SchemaDiscoveredRelationship = {
+      id: `manual:${crypto.randomUUID()}`,
+      sourceTableId: sourceEndpoint.tableId,
+      sourceColumns: [sourceEndpoint.column],
+      targetTableId: targetEndpoint.tableId,
+      targetColumns: [targetEndpoint.column],
+      cardinality: "many-to-one",
+      optional: sourceColumn?.nullable ?? true,
+      confidence: "high",
+      explanation: "用户在画布中直接创建的逻辑关系。",
+      evidence: [],
+      origin: "manual",
+      status: "confirmed",
+      createdAt: new Date().toISOString(),
+    };
+    await persistSchema({
+      ...currentSchema,
+      discoveredRelationships: [
+        ...(currentSchema.discoveredRelationships ?? []),
+        relationship,
+      ],
+    });
+    setSelectedTableId(relationship.sourceTableId);
+    setSelectedRelationshipId(relationship.id);
+  }, [persistSchema]);
+
+  const createRelationshipFromCanvas = useCallback(
+    (source: RelationshipEndpoint, target: RelationshipEndpoint) => {
+      void createManualRelationship(source, target).catch((reason: unknown) =>
+        setError(
+          reason instanceof Error ? reason.message : "无法创建关系",
+        ),
+      );
+    },
+    [createManualRelationship],
+  );
+
+  const deleteLogicalRelationship = async (id: string) => {
+    const currentSchema = schemaRef.current;
+    if (!currentSchema) return;
+    await persistSchema({
+      ...currentSchema,
+      discoveredRelationships: (
+        currentSchema.discoveredRelationships ?? []
+      ).filter((relationship) => relationship.id !== id),
+    });
+    setSelectedRelationshipId(undefined);
+  };
+
   return (
     <TooltipProvider delayDuration={250}>
       <main
@@ -431,7 +661,7 @@ export default function Home() {
             </div>
           ) : null}
 
-          <input ref={fileInputRef} hidden type="file" accept=".sql,.txt,text/plain,application/sql" onChange={handleFileInput} />
+          <input ref={fileInputRef} hidden type="file" onChange={handleFileInput} />
           {schema ? (
             <Button
               variant={aiOpen ? "secondary" : "outline"}
@@ -458,8 +688,11 @@ export default function Home() {
                   ref={graphRef}
                   schema={schema}
                   selectedTableId={selectedTableId}
+                  selectedRelationshipId={selectedRelationshipId}
                   viewMode={viewMode}
-                  onSelectTable={setSelectedTableId}
+                  onCreateRelationship={createRelationshipFromCanvas}
+                  onSelectTable={selectTableFromGraph}
+                  onSelectRelationship={setSelectedRelationshipId}
                 />
               ) : !isParsing ? (
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
@@ -472,11 +705,96 @@ export default function Home() {
               ) : null}
 
               <Card className="absolute right-3 top-3 z-10 flex gap-0.5 p-1 shadow-md">
+                <Button
+                  aria-label={organizing ? "正在整理画布" : "让助手整理画布"}
+                  className="h-8 gap-1.5 border-r pr-2.5 text-xs"
+                  disabled={organizing || !schema?.tables.length}
+                  onClick={requestAiOrganization}
+                  size="sm"
+                  variant="ghost"
+                >
+                  {organizing ? <Loader2 className="animate-spin" /> : <WandSparkles />}
+                  {organizing ? "整理中" : "帮我整理"}
+                </Button>
                 <IconControl label="放大" onClick={() => graphRef.current?.zoomIn()}><ZoomIn /></IconControl>
                 <IconControl label="缩小" onClick={() => graphRef.current?.zoomOut()}><ZoomOut /></IconControl>
                 <IconControl label="适应画布" onClick={() => graphRef.current?.fit()}><Maximize2 /></IconControl>
                 {selectedTableId ? <IconControl label="定位选中表" onClick={() => graphRef.current?.focus(selectedTableId)}><Focus /></IconControl> : null}
               </Card>
+
+              {selectedRelationship ? (
+                <Card className="absolute bottom-3 right-3 z-20 w-[360px] p-4 shadow-xl">
+                  <div className="flex items-center gap-2">
+                    <strong className="text-sm">关系详情</strong>
+                    <Badge variant={selectedRelationship.origin === "database" ? "outline" : "secondary"}>
+                      {selectedRelationship.origin === "database"
+                        ? "数据库外键"
+                        : selectedRelationship.origin === "ai"
+                          ? "AI 关系"
+                          : "手动关系"}
+                    </Badge>
+                    <Button
+                      className="ml-auto h-7 px-2"
+                      onClick={() => setSelectedRelationshipId(undefined)}
+                      size="sm"
+                      variant="ghost"
+                    >
+                      关闭
+                    </Button>
+                  </div>
+                  <div className="mt-4 text-sm font-medium">
+                    {tableNames.get(selectedRelationship.sourceTableId)}.
+                    {selectedRelationship.sourceColumns.join(", ")}
+                    <span className="mx-2 text-muted-foreground">→</span>
+                    {tableNames.get(selectedRelationship.targetTableId)}.
+                    {selectedRelationship.targetColumns.join(", ")}
+                  </div>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {selectedRelationship.cardinality ? (
+                      <Badge variant="outline">
+                        {cardinalityLabels[selectedRelationship.cardinality]}
+                      </Badge>
+                    ) : null}
+                    {selectedRelationship.origin === "ai" && selectedRelationship.confidence ? (
+                      <Badge variant="outline">
+                        {confidenceLabels[selectedRelationship.confidence]}
+                      </Badge>
+                    ) : null}
+                  </div>
+                  <p className="mt-3 text-sm">{selectedRelationship.explanation}</p>
+                  {selectedRelationship.evidence.length > 0 ? (
+                    <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+                      {selectedRelationship.evidence.map((evidence) => (
+                        <li key={evidence}>• {evidence}</li>
+                      ))}
+                    </ul>
+                  ) : null}
+                  {selectedRelationship.origin === "database" ? (
+                    <p className="mt-3 text-xs text-muted-foreground">
+                      真实外键需要修改 SQL 后重新导入。
+                    </p>
+                  ) : (
+                    <Button
+                      className="mt-4"
+                      onClick={() =>
+                        void deleteLogicalRelationship(
+                          selectedRelationship.id,
+                        ).catch((reason: unknown) =>
+                          setError(
+                            reason instanceof Error
+                              ? reason.message
+                              : "无法删除关系",
+                          ),
+                        )
+                      }
+                      size="sm"
+                      variant="destructive"
+                    >
+                      <Trash2 />删除关系
+                    </Button>
+                  )}
+                </Card>
+              ) : null}
 
               {isParsing ? (
                 <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-background/75 backdrop-blur-sm">
@@ -508,7 +826,13 @@ export default function Home() {
                 >
                   <AiSidebar
                     key={currentDocument?.id}
+                    actionRequest={aiActionRequest}
                     context={schemaAgentContext}
+                    onActionHandled={(id) =>
+                      setAiActionRequest((request) =>
+                        request?.id === id ? undefined : request,
+                      )
+                    }
                     onClose={() => setAiOpen(false)}
                     selectedTableName={selectedTable?.displayName}
                     workspaceId={currentDocument?.id ?? "schema-atlas"}

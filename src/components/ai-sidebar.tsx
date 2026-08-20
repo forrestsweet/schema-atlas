@@ -48,7 +48,12 @@ import {
 } from "@/lib/schema-pi-client";
 
 type Props = {
+  actionRequest?: {
+    id: string;
+    prompt: string;
+  };
   context: SchemaAgentContext;
+  onActionHandled?: (id: string) => void;
   onClose: () => void;
   selectedTableName?: string;
   workspaceId: string;
@@ -117,6 +122,41 @@ function ThreadBootstrap() {
       console.error("无法初始化 AI 会话", error);
     });
   }, [aui, isThreadListLoading, threadId, threadStatus]);
+
+  return null;
+}
+
+function RequestedActionBridge({
+  enabled,
+  onHandled,
+  request,
+}: {
+  enabled: boolean;
+  onHandled?: (id: string) => void;
+  request?: { id: string; prompt: string };
+}) {
+  const aui = useAui();
+  const isThreadListLoading = useAuiState((state) => state.threads.isLoading);
+  const threadStatus = useAuiState((state) => state.threadListItem.status);
+  const handledRef = useRef<string | undefined>(undefined);
+
+  useEffect(() => {
+    if (
+      !enabled ||
+      !request ||
+      isThreadListLoading ||
+      threadStatus === "new" ||
+      handledRef.current === request.id
+    ) {
+      return;
+    }
+    handledRef.current = request.id;
+    aui.thread.append({
+      role: "user",
+      content: [{ type: "text", text: request.prompt }],
+    });
+    onHandled?.(request.id);
+  }, [aui, enabled, isThreadListLoading, onHandled, request, threadStatus]);
 
   return null;
 }
@@ -464,7 +504,14 @@ function ModelDialog({
   );
 }
 
-export function AiSidebar({ context, onClose, selectedTableName, workspaceId }: Props) {
+export function AiSidebar({
+  actionRequest,
+  context,
+  onActionHandled,
+  onClose,
+  selectedTableName,
+  workspaceId,
+}: Props) {
   const client = useMemo(() => new SchemaPiClient(context), [context]);
   const runtime = usePiRuntime({
     client,
@@ -476,31 +523,41 @@ export function AiSidebar({ context, onClose, selectedTableName, workspaceId }: 
     const generalSuggestions = [
       {
         title: "查看结构概览",
-        label: "表、字段与关系数量",
-        prompt: "读取当前数据库结构概览，并告诉我可以从哪里开始分析。",
+        label: "快速了解当前数据库",
+        prompt: "帮我看看当前数据库结构。",
       },
       {
         title: "查找业务表",
-        label: "按名称、字段和注释搜索",
-        prompt: "我想从当前结构中查找业务相关的数据表，请先询问我需要搜索的业务关键词。",
+        label: "用业务关键词定位数据",
+        prompt: "帮我查找业务相关的数据表。",
+      },
+      {
+        title: "补全表关系",
+        label: "梳理可能遗漏的业务关联",
+        prompt: "帮我发现并补全当前结构中遗漏的表关系。",
+      },
+      {
+        title: "整理当前画布",
+        label: "重新排布卡片与连线",
+        prompt: "帮我整理一下当前画布。",
       },
     ];
     const tableSuggestions = table
       ? [
           {
             title: "理解当前表",
-            label: "字段、索引与用途",
-            prompt: `读取画布当前选中的表 ${table}，说明它的用途、关键字段、主键、索引和约束。`,
+            label: "了解它保存了什么",
+            prompt: `帮我分析一下 ${table}。`,
           },
           {
             title: "梳理关联链路",
-            label: "上下游与 JOIN 条件",
-            prompt: `分析画布当前选中的表 ${table} 的一至两层上下游关系，说明外键方向和可用的 JOIN 条件。`,
+            label: "看看它和哪些表有关",
+            prompt: `看看 ${table} 和哪些表有关。`,
           },
           {
             title: "生成常用查询",
-            label: "只使用真实字段",
-            prompt: `根据画布当前选中的表 ${table}，生成一条常用的 MySQL 8 查询；先核对真实字段和关系，再解释 JOIN 条件。`,
+            label: "从当前表开始查询",
+            prompt: `基于 ${table} 写一条常用查询。`,
           },
         ]
       : [];
@@ -511,12 +568,23 @@ export function AiSidebar({ context, onClose, selectedTableName, workspaceId }: 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [configurationRevision, setConfigurationRevision] = useState(0);
+  const [dismissedRequestId, setDismissedRequestId] = useState<string>();
   const configured = client.isConfigured();
+  const configurationRequested = Boolean(
+    actionRequest &&
+      !configured &&
+      dismissedRequestId !== actionRequest.id,
+  );
 
   return (
     <AssistantRuntimeProvider runtime={runtime} config={assistantConfig}>
       <ThreadBootstrap />
       <ThreadTitleSync />
+      <RequestedActionBridge
+        enabled={configured}
+        onHandled={onActionHandled}
+        request={actionRequest}
+      />
       <aside className="flex h-full min-h-0 flex-col bg-background">
         <header className="flex h-12 shrink-0 items-center border-b px-3">
           {historyOpen ? (
@@ -594,8 +662,14 @@ export function AiSidebar({ context, onClose, selectedTableName, workspaceId }: 
 
       <ModelDialog
         client={client}
-        open={settingsOpen}
-        onOpenChange={setSettingsOpen}
+        open={settingsOpen || configurationRequested}
+        onOpenChange={(open) => {
+          setSettingsOpen(open);
+          if (!open && actionRequest && !client.isConfigured()) {
+            setDismissedRequestId(actionRequest.id);
+            onActionHandled?.(actionRequest.id);
+          }
+        }}
         onSaved={() => setConfigurationRevision((value) => value + 1)}
       />
     </AssistantRuntimeProvider>
