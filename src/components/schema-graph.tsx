@@ -11,8 +11,7 @@ import {
 import type { Graph as G6Graph, NodeData } from "@antv/g6";
 import type { ElkExtendedEdge, ElkNode } from "elkjs";
 import type {
-  DiscoveredRelationshipConfidence,
-  DiscoveredRelationshipStatus,
+  RelationshipCardinality,
   SchemaColumn,
   SchemaCanvasLayoutPlan,
   SchemaModel,
@@ -124,11 +123,8 @@ export type GraphRelationship = {
   targetTableId: string;
   sourceColumns: string[];
   targetColumns: string[];
-  kind: "constraint" | "logical";
-  origin: "database" | "ai" | "manual";
-  status: "confirmed" | Exclude<DiscoveredRelationshipStatus, "rejected">;
-  confidence?: DiscoveredRelationshipConfidence;
-  cardinality?: "one-to-one" | "one-to-many" | "many-to-one" | "many-to-many";
+  kind: "constraint" | "manual";
+  cardinality?: RelationshipCardinality;
 };
 
 function graphRelationships(schema: SchemaModel): GraphRelationship[] {
@@ -136,28 +132,21 @@ function graphRelationships(schema: SchemaModel): GraphRelationship[] {
     (relationship) => ({
       ...relationship,
       kind: "constraint",
-      origin: "database",
-      status: "confirmed",
     }),
   );
-  const discovered: GraphRelationship[] = (
-    schema.discoveredRelationships ?? []
-  )
-    .filter((relationship) => relationship.status !== "rejected")
-    .map((relationship) => ({
+  const manual: GraphRelationship[] = (schema.manualRelationships ?? []).map(
+    (relationship) => ({
       id: relationship.id,
-      name: relationship.explanation,
+      name: "手动关系",
       sourceTableId: relationship.sourceTableId,
       targetTableId: relationship.targetTableId,
       sourceColumns: relationship.sourceColumns,
       targetColumns: relationship.targetColumns,
-      kind: "logical",
-      origin: relationship.origin,
-      status: relationship.status as "candidate" | "confirmed",
-      confidence: relationship.confidence,
+      kind: "manual",
       cardinality: relationship.cardinality,
-    }));
-  return [...constraints, ...discovered];
+    }),
+  );
+  return [...constraints, ...manual];
 }
 
 type TableGeometry = {
@@ -205,9 +194,6 @@ function relationshipEdgeData(
     data: {
       name: relationship.name,
       relationshipKind: relationship.kind,
-      relationshipOrigin: relationship.origin,
-      relationshipStatus: relationship.status,
-      confidence: relationship.confidence,
       controlPoints: route.controlPoints,
       endpointLabel: relationshipLabel(relationship),
       sourceColumn: relationship.sourceColumns[0] || "",
@@ -853,7 +839,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
         Rect,
         register,
       } = g6;
-      const { Line, Rect: GRect, Text } = antvG;
+      const { Line, Path, Rect: GRect, Text } = antvG;
       const tableNodeType = "schema-table-card";
 
       if (!getExtension(ExtensionCategory.NODE, tableNodeType)) {
@@ -888,11 +874,11 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
               "collapse-toggle-hit",
               GRect,
               showCollapseControl ? {
-                x: -27,
-                y: height / 2 - 1,
-                width: 54,
-                height: 24,
-                radius: 12,
+                x: -14,
+                y: height / 2 - 11,
+                width: 28,
+                height: 22,
+                radius: 11,
                 fill: "#ffffff",
                 stroke: "#d4d4d4",
                 lineWidth: 1,
@@ -906,17 +892,16 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
             );
             this.upsert(
               "collapse-toggle",
-              Text,
+              Path,
               showCollapseControl ? {
-                text: collapsed ? "展开" : "收起",
-                x: 0,
-                y: height / 2 + 11,
-                fill: "#525252",
-                fontFamily: "var(--font-geist-sans)",
-                fontSize: 10,
-                fontWeight: 600,
-                textAlign: "center",
-                textBaseline: "middle",
+                d: collapsed
+                  ? `M -4 ${height / 2 - 2} L 0 ${height / 2 + 2} L 4 ${height / 2 - 2}`
+                  : `M -4 ${height / 2 + 2} L 0 ${height / 2 - 2} L 4 ${height / 2 + 2}`,
+                fill: "none",
+                stroke: "#525252",
+                lineCap: "round",
+                lineJoin: "round",
+                lineWidth: 1.6,
                 cursor: "pointer",
                 pointerEvents: "none",
               } : false,
@@ -1263,19 +1248,15 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
           type: "polyline",
           style: (datum) => {
             const kind = String(datum.data?.relationshipKind || "constraint");
-            const origin = String(
-              datum.data?.relationshipOrigin || "database",
-            );
             const controlPoints = Array.isArray(datum.data?.controlPoints)
               ? (datum.data.controlPoints as Array<[number, number]>)
               : [];
-            if (kind === "logical") {
-              const manual = origin === "manual";
+            if (kind === "manual") {
               return {
-                stroke: manual ? "#059669" : "#4f46e5",
-                strokeOpacity: manual ? 0.9 : 0.76,
-                lineWidth: manual ? 2.8 : 2.2,
-                lineDash: manual ? 0 : [7, 5],
+                stroke: "#059669",
+                strokeOpacity: 0.9,
+                lineWidth: 2.8,
+                lineDash: 0,
                 endArrow: true,
                 radius: 10,
                 router: false,
@@ -1284,7 +1265,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
                 sourcePort: String(datum.data?.sourcePort || ""),
                 targetPort: String(datum.data?.targetPort || ""),
                 labelText: String(datum.data?.endpointLabel || ""),
-                labelFill: manual ? "#047857" : "#4338ca",
+                labelFill: "#047857",
                 labelFontSize: 11,
                 labelFontWeight: 600,
                 labelAutoRotate: false,
@@ -1429,10 +1410,27 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
         if (id && isCollapseToggle(pointerEvent)) {
           const node = graph.getNodeData(id);
           if (!node.data?.canCollapse) return;
-          const collapsed = !collapsedTableIdsRef.current.has(id);
+          const wasCollapsed = collapsedTableIdsRef.current.has(id);
+          const collapsed = !wasCollapsed;
           if (collapsed) collapsedTableIdsRef.current.add(id);
           else collapsedTableIdsRef.current.delete(id);
-          graph.updateNodeData([{ id, data: { collapsed } }]);
+          const expandedHeight = Number(node.data?.cardHeight || 42);
+          const collapsedHeight = Number(node.data?.collapsedCardHeight || 42);
+          const previousHeight = wasCollapsed
+            ? collapsedHeight
+            : expandedHeight;
+          const nextHeight = collapsed ? collapsedHeight : expandedHeight;
+          graph.updateNodeData([
+            {
+              id,
+              data: { collapsed },
+              style: {
+                x: Number(node.style?.x || 0),
+                y: Number(node.style?.y || 0) +
+                  (nextHeight - previousHeight) / 2,
+              },
+            },
+          ]);
           const relationshipsById = new Map(
             visibleDataRef.current.relationships.map((relationship) => [
               relationship.id,

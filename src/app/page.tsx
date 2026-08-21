@@ -70,7 +70,7 @@ import {
 import { cn } from "@/lib/utils";
 import type {
   SchemaCanvasLayoutPlan,
-  SchemaDiscoveredRelationship,
+  SchemaManualRelationship,
   SchemaModel,
   WorkerParseResponse,
 } from "@/lib/schema-types";
@@ -144,12 +144,6 @@ function ImportSqlMenu({
     </DropdownMenu>
   );
 }
-
-const confidenceLabels = {
-  high: "高可信度",
-  medium: "中可信度",
-  low: "低可信度",
-} as const;
 
 const cardinalityLabels = {
   "one-to-one": "一对一",
@@ -332,30 +326,6 @@ export default function Home() {
     );
   }, []);
 
-  const applyRelationships = useCallback(
-    async (relationships: SchemaDiscoveredRelationship[]) => {
-      const currentSchema = schemaRef.current;
-      if (!currentSchema) throw new Error("当前没有已导入的数据库结构。");
-      const byId = new Map(
-        (currentSchema.discoveredRelationships ?? []).map((relationship) => [
-          relationship.id,
-          relationship,
-        ]),
-      );
-      for (const relationship of relationships) {
-        byId.set(relationship.id, {
-          ...relationship,
-          status: "confirmed",
-        });
-      }
-      await persistSchema({
-        ...currentSchema,
-        discoveredRelationships: [...byId.values()],
-      });
-    },
-    [persistSchema],
-  );
-
   const schemaAgentContext = useMemo<SchemaAgentContext>(
     () => ({
       focusTable: (tableId) => focusTableRef.current(tableId),
@@ -363,9 +333,8 @@ export default function Home() {
       getSchema: () => schemaRef.current,
       getSelectedTableId: () => selectedTableIdRef.current,
       organizeCanvas,
-      applyRelationships,
     }),
-    [applyRelationships, organizeCanvas],
+    [organizeCanvas],
   );
 
   const openDocument = (document: SchemaDocument) => {
@@ -474,9 +443,7 @@ export default function Home() {
     setPastedSql("");
   };
 
-  const logicalRelationships = (schema?.discoveredRelationships ?? []).filter(
-    (relationship) => relationship.status !== "rejected",
-  );
+  const manualRelationships = schema?.manualRelationships ?? [];
   const tableNames = new Map(
     (schema?.tables ?? []).map((table) => [table.id, table.displayName]),
   );
@@ -486,13 +453,12 @@ export default function Home() {
       kind: "constraint" as const,
       origin: "database" as const,
       explanation: "数据库 DDL 中显式声明的外键约束。",
-      evidence: [] as string[],
       cardinality: undefined,
-      confidence: undefined,
     })),
-    ...logicalRelationships.map((relationship) => ({
+    ...manualRelationships.map((relationship) => ({
       ...relationship,
-      kind: "logical" as const,
+      origin: "manual" as const,
+      explanation: "用户在画布中直接创建的关系。",
     })),
   ];
   const selectedRelationship = allRelationships.find(
@@ -521,9 +487,7 @@ export default function Home() {
     }
     const duplicate = [
       ...currentSchema.relationships,
-      ...(currentSchema.discoveredRelationships ?? []).filter(
-        (relationship) => relationship.status !== "rejected",
-      ),
+      ...(currentSchema.manualRelationships ?? []),
     ].some(
       (relationship) =>
         relationship.sourceTableId === sourceEndpoint.tableId &&
@@ -532,7 +496,7 @@ export default function Home() {
         relationship.targetColumns.join("\u0000") === targetEndpoint.column,
     );
     if (duplicate) throw new Error("这条关系已经存在。");
-    const relationship: SchemaDiscoveredRelationship = {
+    const relationship: SchemaManualRelationship = {
       id: `manual:${crypto.randomUUID()}`,
       sourceTableId: sourceEndpoint.tableId,
       sourceColumns: [sourceEndpoint.column],
@@ -540,17 +504,12 @@ export default function Home() {
       targetColumns: [targetEndpoint.column],
       cardinality: "many-to-one",
       optional: sourceColumn?.nullable ?? true,
-      confidence: "high",
-      explanation: "用户在画布中直接创建的逻辑关系。",
-      evidence: [],
-      origin: "manual",
-      status: "confirmed",
       createdAt: new Date().toISOString(),
     };
     await persistSchema({
       ...currentSchema,
-      discoveredRelationships: [
-        ...(currentSchema.discoveredRelationships ?? []),
+      manualRelationships: [
+        ...(currentSchema.manualRelationships ?? []),
         relationship,
       ],
     });
@@ -569,14 +528,14 @@ export default function Home() {
     [createManualRelationship],
   );
 
-  const deleteLogicalRelationship = async (id: string) => {
+  const deleteManualRelationship = async (id: string) => {
     const currentSchema = schemaRef.current;
     if (!currentSchema) return;
     await persistSchema({
       ...currentSchema,
-      discoveredRelationships: (
-        currentSchema.discoveredRelationships ?? []
-      ).filter((relationship) => relationship.id !== id),
+      manualRelationships: (currentSchema.manualRelationships ?? []).filter(
+        (relationship) => relationship.id !== id,
+      ),
     });
     setSelectedRelationshipId(undefined);
   };
@@ -739,9 +698,7 @@ export default function Home() {
                     <Badge variant={selectedRelationship.origin === "database" ? "outline" : "secondary"}>
                       {selectedRelationship.origin === "database"
                         ? "数据库外键"
-                        : selectedRelationship.origin === "ai"
-                          ? "AI 关系"
-                          : "手动关系"}
+                        : "手动关系"}
                     </Badge>
                     <Button
                       className="ml-auto h-7 px-2"
@@ -765,20 +722,8 @@ export default function Home() {
                         {cardinalityLabels[selectedRelationship.cardinality]}
                       </Badge>
                     ) : null}
-                    {selectedRelationship.origin === "ai" && selectedRelationship.confidence ? (
-                      <Badge variant="outline">
-                        {confidenceLabels[selectedRelationship.confidence]}
-                      </Badge>
-                    ) : null}
                   </div>
                   <p className="mt-3 text-sm">{selectedRelationship.explanation}</p>
-                  {selectedRelationship.evidence.length > 0 ? (
-                    <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-                      {selectedRelationship.evidence.map((evidence) => (
-                        <li key={evidence}>• {evidence}</li>
-                      ))}
-                    </ul>
-                  ) : null}
                   {selectedRelationship.origin === "database" ? (
                     <p className="mt-3 text-xs text-muted-foreground">
                       真实外键需要修改 SQL 后重新导入。
@@ -787,7 +732,7 @@ export default function Home() {
                     <Button
                       className="mt-4"
                       onClick={() =>
-                        void deleteLogicalRelationship(
+                        void deleteManualRelationship(
                           selectedRelationship.id,
                         ).catch((reason: unknown) =>
                           setError(

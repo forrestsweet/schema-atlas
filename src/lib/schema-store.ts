@@ -1,7 +1,7 @@
 import type { SchemaModel } from "@/lib/schema-types";
 
 const DATABASE_NAME = "schema-atlas";
-const DATABASE_VERSION = 1;
+const DATABASE_VERSION = 2;
 const DOCUMENT_STORE = "documents";
 const THREAD_STORE = "aiThreads";
 const SETTING_STORE = "settings";

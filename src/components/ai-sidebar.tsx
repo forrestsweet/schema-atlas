@@ -490,9 +490,9 @@ export function AiSidebar({
         prompt: "帮我查找业务相关的数据表。",
       },
       {
-        title: "补全表关系",
-        label: "梳理可能遗漏的业务关联",
-        prompt: "帮我发现并补全当前结构中遗漏的表关系。",
+        title: "分析表关系",
+        label: "理解已有外键和手动连接",
+        prompt: "帮我分析当前结构中已有的表关系。",
       },
       {
         title: "整理当前画布",

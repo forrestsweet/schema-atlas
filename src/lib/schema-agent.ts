@@ -3,7 +3,7 @@ import { Type } from "typebox";
 
 import type {
   SchemaCanvasLayoutPlan,
-  SchemaDiscoveredRelationship,
+  SchemaManualRelationship,
   SchemaModel,
   SchemaRelationship,
   SchemaTable,
@@ -15,9 +15,6 @@ export type SchemaAgentContext = {
   getSchema: () => SchemaModel | undefined;
   getSelectedTableId: () => string | undefined;
   organizeCanvas: (plan: SchemaCanvasLayoutPlan) => Promise<void>;
-  applyRelationships: (
-    relationships: SchemaDiscoveredRelationship[],
-  ) => Promise<void>;
 };
 
 const result = (value: unknown) => ({
@@ -61,8 +58,8 @@ const relationshipView = (
   onUpdate: relationship.onUpdate,
 });
 
-const discoveredRelationshipView = (
-  relationship: SchemaDiscoveredRelationship,
+const manualRelationshipView = (
+  relationship: SchemaManualRelationship,
   tables: ReadonlyMap<string, SchemaTable>,
 ) => ({
   id: relationship.id,
@@ -72,10 +69,6 @@ const discoveredRelationshipView = (
   targetColumns: relationship.targetColumns,
   cardinality: relationship.cardinality,
   optional: relationship.optional,
-  confidence: relationship.confidence,
-  explanation: relationship.explanation,
-  origin: relationship.origin,
-  status: relationship.status,
 });
 
 const tableView = (schema: SchemaModel, table: SchemaTable) => {
@@ -85,11 +78,8 @@ const tableView = (schema: SchemaModel, table: SchemaTable) => {
       relationship.sourceTableId === table.id ||
       relationship.targetTableId === table.id,
   );
-  const discoveredRelationships = (
-    schema.discoveredRelationships ?? []
-  ).filter(
+  const manualRelationships = (schema.manualRelationships ?? []).filter(
     (relationship) =>
-      relationship.status !== "rejected" &&
       (relationship.sourceTableId === table.id ||
         relationship.targetTableId === table.id),
   );
@@ -110,8 +100,8 @@ const tableView = (schema: SchemaModel, table: SchemaTable) => {
     relationships: relationships.map((relationship) =>
       relationshipView(relationship, tables),
     ),
-    discoveredRelationships: discoveredRelationships.map((relationship) =>
-      discoveredRelationshipView(relationship, tables),
+    manualRelationships: manualRelationships.map((relationship) =>
+      manualRelationshipView(relationship, tables),
     ),
   };
 };
@@ -124,7 +114,7 @@ export const buildSchemaSystemPrompt = (context: SchemaAgentContext) => {
   const activeContext = schema
     ? [
         `当前结构：${context.getDocumentName() ?? "未命名结构"}`,
-        `共 ${schema.tables.length} 张表、${schema.relationships.length} 条外键关系。`,
+        `共 ${schema.tables.length} 张表、${schema.relationships.length} 条外键关系、${schema.manualRelationships?.length ?? 0} 条手动关系。`,
         selected ? `画布当前选中表：${selected.displayName}` : "画布当前没有选中表。",
       ].join("\n")
     : "当前尚未导入数据库结构。";
@@ -139,8 +129,7 @@ export const buildSchemaSystemPrompt = (context: SchemaAgentContext) => {
 - 不得编造不存在的表、字段、索引或外键。信息不足时明确指出缺少什么。
 - 默认生成 MySQL 8 兼容 SQL。SQL 放在带 mysql 标识的代码块中，并简要说明关键连接条件。
 - 面对 2300 张表时按需调用工具，不要要求把完整结构放进上下文。
-- 当用户要求“关系发现”时，由你自主理解 Schema，不使用固定命名规则或程序评分。先连续调用 schema_list_catalog 阅读完整目录；需要核对时再调用 schema_get_table，最后用 schema_apply_relationships 直接应用逻辑关系。
-- AI 发现的关系会直接显示在画布中，但不能声称它们是数据库显式外键。每条关系必须给出简洁的业务解释和可核对证据，并且只能引用真实存在的表与字段。
+- 关系分析只基于数据库中显式声明的外键和用户手动创建的关系。不要自动推断、创建或补全关系。
 - 用户要求整理、重排或优化画布时，先调用 schema_relationship_map 理解完整关系图，再按需分页调用 schema_list_catalog 理解业务语义，最后调用 canvas_organize 提交由你设计的布局方案。
 - 设计画布布局时不要输出像素坐标。把全部表恰好放入一个布局泳道：上游主数据靠左、核心业务过程居中、明细/日志/结果靠右；高度过高时增加泳道数量，并让强关联表在相邻泳道的相近位置。通常使用 4 至 10 个泳道，避免少数泳道无限向下延伸。
 - 用户要求查找或查看某张表时，可以调用 canvas_focus_table 在画布中定位。
@@ -185,7 +174,7 @@ export const createSchemaTools = (
     name: "schema_list_catalog",
     label: "读取结构目录",
     description:
-      "分页读取当前 Schema 的全部表、字段、类型、键和注释。关系发现时应从第 1 页开始连续读取到最后一页，由模型自主分析，不做关系规则筛选。",
+      "分页读取当前 Schema 的全部表、字段、类型、键和注释。",
     parameters: catalogSchema,
     execute: async (_id, { page = 1, pageSize = 40 }) => {
       const schema = requireSchema(context);
@@ -274,7 +263,7 @@ export const createSchemaTools = (
   const getTable: AgentTool<typeof getTableSchema> = {
     name: "schema_get_table",
     label: "读取表结构",
-    description: "读取一张表的字段、索引和直接外键关系。",
+    description: "读取一张表的字段、索引、直接外键和手动关系。",
     parameters: getTableSchema,
     execute: async (_id, { table }) => {
       const schema = requireSchema(context);
@@ -291,17 +280,28 @@ export const createSchemaTools = (
   const neighbors: AgentTool<typeof neighborsSchema> = {
     name: "schema_get_neighbors",
     label: "分析表关系",
-    description: "读取指定表一到两层范围内的相关表和外键连接。",
+    description: "读取指定表一到两层范围内的相关表、外键和手动连接。",
     parameters: neighborsSchema,
     execute: async (_id, { table, depth = 1 }) => {
       const schema = requireSchema(context);
       const root = findTable(schema, String(table));
       const maxDepth = Math.min(Math.max(Number(depth), 1), 2);
+      const relationships = [
+        ...schema.relationships.map((relationship) => ({
+          ...relationship,
+          kind: "database" as const,
+        })),
+        ...(schema.manualRelationships ?? []).map((relationship) => ({
+          ...relationship,
+          kind: "manual" as const,
+          name: "手动关系",
+        })),
+      ];
       const ids = new Set([root.id]);
       let frontier = new Set([root.id]);
       for (let level = 0; level < maxDepth; level += 1) {
         const next = new Set<string>();
-        for (const relationship of schema.relationships) {
+        for (const relationship of relationships) {
           if (frontier.has(relationship.sourceTableId)) {
             next.add(relationship.targetTableId);
           }
@@ -319,13 +319,16 @@ export const createSchemaTools = (
         tables: [...ids]
           .map((id) => tables.get(id)?.displayName)
           .filter(Boolean),
-        relationships: schema.relationships
+        relationships: relationships
           .filter(
             (relationship) =>
               ids.has(relationship.sourceTableId) &&
               ids.has(relationship.targetTableId),
           )
-          .map((relationship) => relationshipView(relationship, tables)),
+          .map((relationship) => ({
+            ...relationshipView(relationship, tables),
+            kind: relationship.kind,
+          })),
       });
     },
   };
@@ -335,7 +338,7 @@ export const createSchemaTools = (
     name: "schema_relationship_map",
     label: "读取关系地图",
     description:
-      "紧凑读取当前结构的全部显式外键和已发现逻辑关系，用于规划整个画布。",
+      "紧凑读取当前结构的全部显式外键和手动关系，用于规划整个画布。",
     parameters: relationshipMapSchema,
     execute: async () => {
       const schema = requireSchema(context);
@@ -355,15 +358,13 @@ export const createSchemaTools = (
             target: tables.get(relationship.targetTableId),
             targetColumns: relationship.targetColumns,
           })),
-          ...(schema.discoveredRelationships ?? [])
-            .filter((relationship) => relationship.status !== "rejected")
-            .map((relationship) => ({
-              kind: relationship.origin,
-              source: tables.get(relationship.sourceTableId),
-              sourceColumns: relationship.sourceColumns,
-              target: tables.get(relationship.targetTableId),
-              targetColumns: relationship.targetColumns,
-            })),
+          ...(schema.manualRelationships ?? []).map((relationship) => ({
+            kind: "manual",
+            source: tables.get(relationship.sourceTableId),
+            sourceColumns: relationship.sourceColumns,
+            target: tables.get(relationship.targetTableId),
+            targetColumns: relationship.targetColumns,
+          })),
         ],
       });
     },
@@ -454,139 +455,6 @@ export const createSchemaTools = (
     },
   };
 
-  const relationshipProposalSchema = Type.Object({
-    relationships: Type.Array(
-      Type.Object({
-        sourceTable: Type.String({
-          description: "包含引用字段的来源表完整名称",
-        }),
-        sourceColumns: Type.Array(Type.String(), {
-          description: "来源表中的引用字段，可包含联合字段",
-        }),
-        targetTable: Type.String({
-          description: "被引用的目标表完整名称",
-        }),
-        targetColumns: Type.Array(Type.String(), {
-          description: "目标表中对应字段，顺序与来源字段一致",
-        }),
-        cardinality: Type.Union([
-          Type.Literal("one-to-one"),
-          Type.Literal("one-to-many"),
-          Type.Literal("many-to-one"),
-          Type.Literal("many-to-many"),
-        ]),
-        optional: Type.Boolean({
-          description: "这条业务关系对来源记录是否可选",
-        }),
-        confidence: Type.Union([
-          Type.Literal("high"),
-          Type.Literal("medium"),
-          Type.Literal("low"),
-        ]),
-        explanation: Type.String({
-          description: "面向普通用户的一句话业务解释",
-        }),
-        evidence: Type.Array(Type.String(), {
-          description: "模型在当前 Schema 中观察到的证据",
-        }),
-      }),
-      { description: "本轮发现并直接应用的逻辑关系，最多提交 20 条" },
-    ),
-  });
-  const applyRelationships: AgentTool<typeof relationshipProposalSchema> = {
-    name: "schema_apply_relationships",
-    label: "应用 AI 关系",
-    description:
-      "将 AI 自主发现的逻辑关系直接应用到 Schema Atlas 画布。它们会标记为 AI 关系，而不是数据库外键。",
-    parameters: relationshipProposalSchema,
-    execute: async (_id, { relationships }) => {
-      const schema = requireSchema(context);
-      const existing = new Set(
-        (schema.discoveredRelationships ?? [])
-          .filter((relationship) => relationship.status !== "rejected")
-          .map((relationship) => relationship.id),
-      );
-      const proposals: SchemaDiscoveredRelationship[] = [];
-      let duplicates = 0;
-
-      for (const candidate of relationships.slice(0, 20)) {
-        const source = findTable(schema, String(candidate.sourceTable));
-        const target = findTable(schema, String(candidate.targetTable));
-        const sourceColumns = candidate.sourceColumns.map(String);
-        const targetColumns = candidate.targetColumns.map(String);
-        if (
-          sourceColumns.length === 0 ||
-          sourceColumns.length !== targetColumns.length
-        ) {
-          throw new Error("候选关系的来源字段与目标字段数量必须相同且不能为空。");
-        }
-        for (const column of sourceColumns) {
-          if (!source.columns.some((item) => item.name === column)) {
-            throw new Error(`表 ${source.displayName} 中不存在字段 ${column}`);
-          }
-        }
-        for (const column of targetColumns) {
-          if (!target.columns.some((item) => item.name === column)) {
-            throw new Error(`表 ${target.displayName} 中不存在字段 ${column}`);
-          }
-        }
-
-        const id = [
-          "ai",
-          source.id,
-          sourceColumns.join(","),
-          target.id,
-          targetColumns.join(","),
-        ].join(":");
-        const duplicatesExplicit = schema.relationships.some(
-          (relationship) =>
-            relationship.sourceTableId === source.id &&
-            relationship.targetTableId === target.id &&
-            relationship.sourceColumns.join("\u0000") ===
-              sourceColumns.join("\u0000") &&
-            relationship.targetColumns.join("\u0000") ===
-              targetColumns.join("\u0000"),
-        );
-        if (existing.has(id) || duplicatesExplicit) {
-          duplicates += 1;
-          continue;
-        }
-        existing.add(id);
-        proposals.push({
-          id,
-          sourceTableId: source.id,
-          sourceColumns,
-          targetTableId: target.id,
-          targetColumns,
-          cardinality: candidate.cardinality,
-          optional: Boolean(candidate.optional),
-          confidence: candidate.confidence,
-          explanation: String(candidate.explanation).trim(),
-          evidence: candidate.evidence.map(String).filter(Boolean).slice(0, 8),
-          origin: "ai",
-          status: "confirmed",
-          createdAt: new Date().toISOString(),
-        });
-      }
-
-      if (proposals.length > 0) {
-        await context.applyRelationships(proposals);
-      }
-      return result({
-        added: proposals.length,
-        duplicates,
-        relationships: proposals.map((relationship) =>
-          discoveredRelationshipView(
-            relationship,
-            new Map(
-              schema.tables.map((table) => [table.id, table] as const),
-            ),
-          ),
-        ),
-      });
-    },
-  };
-
   return [
     overview,
     catalog,
@@ -596,6 +464,5 @@ export const createSchemaTools = (
     relationshipMap,
     focus,
     organize,
-    applyRelationships,
   ];
 };
