@@ -44,6 +44,7 @@ import type { SchemaAgentContext } from "@/lib/schema-agent";
 import { piBuiltinProviders } from "@/lib/pi-models";
 import {
   SchemaPiClient,
+  type OpenAiApiFormat,
   type SchemaAiConnection,
 } from "@/lib/schema-pi-client";
 
@@ -302,6 +303,7 @@ function ModelDialog({
   const selectProvider = (providerId: string) => {
     if (providerId === "custom") {
       setConnection({
+        apiFormat: "openai-completions",
         apiKey: "",
         baseUrl: "https://api.openai.com/v1",
         custom: true,
@@ -317,6 +319,10 @@ function ModelDialog({
     if (!provider) return;
     const model = provider.models[0];
     setConnection({
+      apiFormat:
+        model?.api === "openai-responses"
+          ? "openai-responses"
+          : "openai-completions",
       apiKey: "",
       baseUrl: provider.baseUrl,
       custom: false,
@@ -400,6 +406,32 @@ function ModelDialog({
                   value={connection.baseUrl}
                   onChange={(event) => update("baseUrl", event.target.value)}
                 />
+              </label>
+              <label className="grid gap-1.5 text-sm">
+                <span>接口格式</span>
+                <Select
+                  value={connection.apiFormat}
+                  onValueChange={(value) =>
+                    update("apiFormat", value as OpenAiApiFormat)
+                  }
+                >
+                  <SelectTrigger className="w-full">
+                    <SelectValue placeholder="选择接口格式" />
+                  </SelectTrigger>
+                  <SelectContent
+                    position="popper"
+                    align="start"
+                    side="bottom"
+                    sideOffset={4}
+                  >
+                    <SelectItem value="openai-responses">
+                      Responses API（/responses）
+                    </SelectItem>
+                    <SelectItem value="openai-completions">
+                      Chat Completions（/chat/completions）
+                    </SelectItem>
+                  </SelectContent>
+                </Select>
               </label>
               <label className="grid gap-1.5 text-sm">
                 <span>模型名称</span>

@@ -52,6 +52,7 @@ export type PiBuiltinProvider = {
   baseUrl: string;
   id: string;
   models: readonly {
+    api: Api;
     id: string;
     name: string;
     supportsThinking: boolean;
@@ -64,6 +65,7 @@ export const piBuiltinProviders: readonly PiBuiltinProvider[] = providers.map(
     baseUrl: provider.baseUrl ?? "",
     id: provider.id,
     models: provider.getModels().map((model) => ({
+      api: model.api,
       id: model.id,
       name: model.name,
       supportsThinking: getSupportedThinkingLevels(model).length > 1,

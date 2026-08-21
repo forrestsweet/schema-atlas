@@ -9,6 +9,7 @@ import {
   type StreamFn,
 } from "@earendil-works/pi-agent-core";
 import { streamSimple as streamOpenAICompletions } from "@earendil-works/pi-ai/api/openai-completions";
+import { streamSimple as streamOpenAIResponses } from "@earendil-works/pi-ai/api/openai-responses";
 import {
   getSupportedThinkingLevels,
   type Api,
@@ -49,7 +50,12 @@ import {
 const CONNECTION_KEY = "schema-atlas-ai-connection";
 const CONTEXT_WINDOW = 128_000;
 
+export type OpenAiApiFormat =
+  | "openai-completions"
+  | "openai-responses";
+
 export type SchemaAiConnection = {
+  apiFormat: OpenAiApiFormat;
   apiKey: string;
   baseUrl: string;
   custom: boolean;
@@ -80,6 +86,10 @@ const emptyConnection = (): SchemaAiConnection => {
     piBuiltinProviders[0];
   const model = provider?.models[0];
   return {
+    apiFormat:
+      model?.api === "openai-responses"
+        ? "openai-responses"
+        : "openai-completions",
     apiKey: "",
     baseUrl: provider?.baseUrl ?? "https://api.openai.com/v1",
     custom: false,
@@ -112,7 +122,16 @@ const readConnection = (): SchemaAiConnection => {
     typeof parsed.custom === "boolean"
       ? parsed.custom
       : !builtin || baseUrl !== builtin.baseUrl;
+  const builtinModel = builtin?.models.find((model) => model.id === modelId);
+  const apiFormat: OpenAiApiFormat = custom
+    ? parsed.apiFormat === "openai-responses"
+      ? "openai-responses"
+      : "openai-completions"
+    : builtinModel?.api === "openai-responses"
+      ? "openai-responses"
+      : "openai-completions";
   return {
+    apiFormat,
     apiKey: typeof parsed.apiKey === "string" ? parsed.apiKey : "",
     baseUrl,
     custom,
@@ -139,7 +158,7 @@ const createModel = (connection: SchemaAiConnection): Model<Api> => {
     : undefined;
   if (builtin) return builtin;
   return {
-    api: "openai-completions",
+    api: connection.apiFormat,
     baseUrl: connection.baseUrl.replace(/\/$/, ""),
     contextWindow: CONTEXT_WINDOW,
     cost: { cacheRead: 0, cacheWrite: 0, input: 0, output: 0 },
@@ -159,6 +178,13 @@ const streamModel: StreamFn = (model, context, options) => {
       ...options,
       maxRetries: 2,
     });
+  }
+  if (model.api === "openai-responses") {
+    return streamOpenAIResponses(
+      model as Model<"openai-responses">,
+      context,
+      { ...options, maxRetries: 2 },
+    );
   }
   return streamOpenAICompletions(
     model as Model<"openai-completions">,
