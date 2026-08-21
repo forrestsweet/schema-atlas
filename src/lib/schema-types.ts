@@ -58,8 +58,8 @@ export type SchemaManualRelationship = {
 export type SchemaCanvasState = {
   positions: Record<string, { x: number; y: number }>;
   viewport?: {
-    x: number;
-    y: number;
+    centerX: number;
+    centerY: number;
     zoom: number;
   };
 };

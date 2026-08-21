@@ -72,6 +72,7 @@ type Props = {
 };
 
 type SchemaPointerEvent = {
+  button?: number;
   client?: { x?: number; y?: number };
   originalTarget?: {
     className?: string;
@@ -89,6 +90,11 @@ type RelationshipDraft = {
   targetPort?: string;
 };
 
+type RelationshipPortHit = {
+  endpoint: RelationshipEndpoint;
+  port: string;
+};
+
 type RelationshipAction = {
   id: string;
   x: number;
@@ -104,7 +110,11 @@ function validPosition(
 }
 
 function currentCanvasState(graph: G6Graph): SchemaCanvasState {
-  const [x, y] = graph.getPosition();
+  const [width, height] = graph.getSize();
+  const [centerX, centerY] = graph.getCanvasByViewport([
+    width / 2,
+    height / 2,
+  ]);
   return {
     positions: Object.fromEntries(
       graph.getNodeData().map((node) => [
@@ -116,8 +126,8 @@ function currentCanvasState(graph: G6Graph): SchemaCanvasState {
       ]),
     ),
     viewport: {
-      x: Number(x || 0),
-      y: Number(y || 0),
+      centerX,
+      centerY,
       zoom: graph.getZoom(),
     },
   };
@@ -163,6 +173,77 @@ function pointerPosition(
   if (!Number.isFinite(x) || !Number.isFinite(y)) return undefined;
   const bounds = container.getBoundingClientRect();
   return { x: x - bounds.left, y: y - bounds.top };
+}
+
+function relationshipPortAtPointer(
+  graph: G6Graph,
+  event: SchemaPointerEvent,
+): RelationshipPortHit | undefined {
+  const directColumn = portColumn(event);
+  const directPort = portKey(event);
+  const directTableId = String(event.target?.id || "");
+  if (
+    event.targetType === "node" &&
+    directColumn &&
+    directPort &&
+    directTableId
+  ) {
+    return {
+      endpoint: { column: directColumn, tableId: directTableId },
+      port: directPort,
+    };
+  }
+
+  const clientX = Number(event.client?.x);
+  const clientY = Number(event.client?.y);
+  if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) {
+    return undefined;
+  }
+  const [pointerX, pointerY] = graph.getCanvasByClient([clientX, clientY]);
+
+  let nearest:
+    | (RelationshipPortHit & { distanceSquared: number })
+    | undefined;
+  const hitRadius = 16 / Math.max(graph.getZoom(), 0.01);
+  for (const node of graph.getNodeData()) {
+    const rows = Array.isArray(node.data?.rows)
+      ? (node.data.rows as SchemaGraphRow[])
+      : [];
+    const visibleRows = node.data?.collapsed
+      ? rows.slice(0, COLLAPSED_CARD_ROWS)
+      : rows;
+    const cardHeight = node.data?.collapsed
+      ? Number(node.data?.collapsedCardHeight || 42)
+      : Number(node.data?.cardHeight || 42);
+    const nodeX = Number(node.style?.x || 0);
+    const nodeY = Number(node.style?.y || 0);
+    const headerHeight = Number(node.data?.cardHeaderHeight || 42);
+
+    visibleRows.forEach((row, index) => {
+      const portY =
+        nodeY - cardHeight / 2 +
+        headerHeight +
+        index * CARD_ROW_HEIGHT +
+        CARD_ROW_HEIGHT / 2;
+      (["left", "right"] as const).forEach((side) => {
+        const portX =
+          nodeX + (side === "left" ? -CARD_WIDTH / 2 : CARD_WIDTH / 2);
+        const distanceSquared =
+          (portX - pointerX) ** 2 + (portY - pointerY) ** 2;
+        if (
+          distanceSquared <= hitRadius ** 2 &&
+          (!nearest || distanceSquared < nearest.distanceSquared)
+        ) {
+          nearest = {
+            distanceSquared,
+            endpoint: { column: row.key, tableId: String(node.id) },
+            port: `${side}:${row.key}`,
+          };
+        }
+      });
+    });
+  }
+  return nearest;
 }
 
 export type GraphRelationship = {
@@ -1348,21 +1429,24 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
         void graph.draw();
       });
 
-      graph.on(NodeEvent.POINTER_DOWN, (event) => {
+      graph.on(CommonEvent.POINTER_DOWN, (event) => {
         if (!containerRef.current) return;
         const pointerEvent = event as unknown as SchemaPointerEvent;
-        const column = portColumn(pointerEvent);
-        const tableId = String(pointerEvent.target?.id || "");
+        if (pointerEvent.button !== undefined && pointerEvent.button !== 0) {
+          return;
+        }
+        const sourcePort = relationshipPortAtPointer(graph, pointerEvent);
         const position = pointerPosition(pointerEvent, containerRef.current);
-        if (!column || !tableId || !position) return;
+        if (!sourcePort || !position) return;
         const draft: RelationshipDraft = {
           current: position,
-          source: { column, tableId },
+          source: sourcePort.endpoint,
           start: position,
         };
         relationshipDraftRef.current = draft;
         setRelationshipDraft(draft);
         graph.updateBehavior({ key: "drag-table", enable: false });
+        graph.getCanvas().setCursor("crosshair");
       });
 
       graph.on(NodeEvent.DRAG_END, () => {
@@ -1376,25 +1460,21 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
       graph.on(CommonEvent.POINTER_MOVE, (event) => {
         if (!relationshipDraftRef.current || !containerRef.current) return;
         const pointerEvent = event as unknown as SchemaPointerEvent;
+        graph.getCanvas().setCursor("crosshair");
         const position = pointerPosition(
           pointerEvent,
           containerRef.current,
         );
         if (!position) return;
-        const targetColumn = portColumn(pointerEvent);
-        const targetPort = portKey(pointerEvent);
-        const targetTableId = String(pointerEvent.target?.id || "");
+        const targetPortHit = relationshipPortAtPointer(graph, pointerEvent);
         const source = relationshipDraftRef.current.source;
         const target =
-          pointerEvent.targetType === "node" &&
-          targetColumn &&
-          targetPort &&
-          targetTableId &&
-          (source.tableId !== targetTableId ||
-            source.column !== targetColumn)
-            ? { column: targetColumn, tableId: targetTableId }
+          targetPortHit &&
+          (source.tableId !== targetPortHit.endpoint.tableId ||
+            source.column !== targetPortHit.endpoint.column)
+            ? targetPortHit.endpoint
             : undefined;
-        const nextTargetPort = target ? targetPort : undefined;
+        const nextTargetPort = target ? targetPortHit?.port : undefined;
         const previousTarget = relationshipDraftRef.current.target;
         const targetChanged =
           previousTarget?.tableId !== target?.tableId ||
@@ -1410,7 +1490,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
           if (target && graph.hasNode(target.tableId)) {
             updates.push({
               id: target.tableId,
-              data: { connectionTargetPort: targetPort },
+              data: { connectionTargetPort: nextTargetPort },
             });
           }
           if (updates.length > 0) {
@@ -1432,18 +1512,8 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
         const draft = relationshipDraftRef.current;
         if (!draft) return;
         const pointerEvent = event as unknown as SchemaPointerEvent;
-        const pointerTargetColumn = portColumn(pointerEvent);
-        const pointerTargetTableId = String(pointerEvent.target?.id || "");
-        const target = draft.target ?? (
-          pointerEvent.targetType === "node" &&
-          pointerTargetColumn &&
-          pointerTargetTableId
-            ? {
-                column: pointerTargetColumn,
-                tableId: pointerTargetTableId,
-              }
-            : undefined
-        );
+        const pointerTarget = relationshipPortAtPointer(graph, pointerEvent);
+        const target = draft.target ?? pointerTarget?.endpoint;
         relationshipDraftRef.current = undefined;
         setRelationshipDraft(undefined);
         if (draft.target && graph.hasNode(draft.target.tableId)) {
@@ -1453,6 +1523,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
           void graph.draw();
         }
         graph.updateBehavior({ key: "drag-table", enable: canDragTable });
+        graph.getCanvas().setCursor("default");
         if (
           !target ||
           (draft.source.tableId === target.tableId &&
@@ -1570,16 +1641,17 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
       const initialViewport = initialCanvasState?.viewport;
       if (
         initialViewport &&
-        Number.isFinite(initialViewport.x) &&
-        Number.isFinite(initialViewport.y) &&
+        Number.isFinite(initialViewport.centerX) &&
+        Number.isFinite(initialViewport.centerY) &&
         Number.isFinite(initialViewport.zoom) &&
         initialViewport.zoom > 0
       ) {
         await graph.zoomTo(initialViewport.zoom, false, [0, 0]);
-        await graph.translateTo(
-          [initialViewport.x, initialViewport.y],
-          false,
-        );
+        const [width, height] = graph.getSize();
+        await graph.translateTo([
+          (width / 2 - initialViewport.centerX) * initialViewport.zoom,
+          (height / 2 - initialViewport.centerY) * initialViewport.zoom,
+        ], false);
       }
       if (cancelled) return;
 
