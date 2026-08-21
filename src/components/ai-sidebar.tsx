@@ -494,11 +494,6 @@ export function AiSidebar({
         label: "理解已有外键和手动连接",
         prompt: "帮我分析当前结构中已有的表关系。",
       },
-      {
-        title: "整理当前画布",
-        label: "重新排布卡片与连线",
-        prompt: "帮我整理一下当前画布。",
-      },
     ];
     const tableSuggestions = table
       ? [

@@ -2,7 +2,6 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { Type } from "typebox";
 
 import type {
-  SchemaCanvasLayoutPlan,
   SchemaManualRelationship,
   SchemaModel,
   SchemaRelationship,
@@ -14,7 +13,6 @@ export type SchemaAgentContext = {
   getDocumentName: () => string | undefined;
   getSchema: () => SchemaModel | undefined;
   getSelectedTableId: () => string | undefined;
-  organizeCanvas: (plan: SchemaCanvasLayoutPlan) => Promise<void>;
 };
 
 const result = (value: unknown) => ({
@@ -130,8 +128,6 @@ export const buildSchemaSystemPrompt = (context: SchemaAgentContext) => {
 - 默认生成 MySQL 8 兼容 SQL。SQL 放在带 mysql 标识的代码块中，并简要说明关键连接条件。
 - 面对 2300 张表时按需调用工具，不要要求把完整结构放进上下文。
 - 关系分析只基于数据库中显式声明的外键和用户手动创建的关系。不要自动推断、创建或补全关系。
-- 用户要求整理、重排或优化画布时，先调用 schema_relationship_map 理解完整关系图，再按需分页调用 schema_list_catalog 理解业务语义，最后调用 canvas_organize 提交由你设计的布局方案。
-- 设计画布布局时不要输出像素坐标。把全部表恰好放入一个布局泳道：上游主数据靠左、核心业务过程居中、明细/日志/结果靠右；高度过高时增加泳道数量，并让强关联表在相邻泳道的相近位置。通常使用 4 至 10 个泳道，避免少数泳道无限向下延伸。
 - 用户要求查找或查看某张表时，可以调用 canvas_focus_table 在画布中定位。
 - 回答保持简洁，优先给出可直接使用的结果。
 
@@ -386,75 +382,6 @@ export const createSchemaTools = (
     },
   };
 
-  const organizeSchema = Type.Object({
-    summary: Type.Optional(
-      Type.String({ description: "一句话说明本次布局思路" }),
-    ),
-    lanes: Type.Array(
-      Type.Object({
-        name: Type.String({ description: "面向用户的业务泳道名称" }),
-        tables: Type.Array(Type.String(), {
-          description: "该泳道中的完整表名，顺序就是从上到下的卡片顺序",
-        }),
-      }),
-      {
-        description:
-          "从左到右的画布泳道。尽量包含当前结构的全部表且每张表只出现一次",
-        maxItems: 16,
-        minItems: 1,
-      },
-    ),
-  });
-  const organize: AgentTool<typeof organizeSchema> = {
-    name: "canvas_organize",
-    label: "应用 AI 画布布局",
-    description:
-      "提交你根据业务语义和完整关系图设计的泳道布局。应用会把泳道转换成安全坐标、重新计算线道并适应视图。",
-    parameters: organizeSchema,
-    execute: async (_id, { lanes, summary }) => {
-      const schema = requireSchema(context);
-      const tablesByName = new Map(
-        schema.tables.flatMap((table) => [
-          [table.id.toLowerCase(), table] as const,
-          [table.name.toLowerCase(), table] as const,
-          [table.displayName.toLowerCase(), table] as const,
-        ]),
-      );
-      const assigned = new Set<string>();
-      const normalizedLanes = lanes.flatMap((lane) => {
-        const tableIds = lane.tables.flatMap((value) => {
-          const table = tablesByName.get(String(value).trim().toLowerCase());
-          if (!table) throw new Error(`布局中包含未知数据表：${value}`);
-          if (assigned.has(table.id)) return [];
-          assigned.add(table.id);
-          return [table.id];
-        });
-        return tableIds.length > 0
-          ? [{ name: String(lane.name).trim() || "未命名泳道", tableIds }]
-          : [];
-      });
-      const unassigned = schema.tables
-        .filter((table) => !assigned.has(table.id))
-        .map((table) => table.id);
-      if (unassigned.length > 0) {
-        normalizedLanes.push({ name: "其他", tableIds: unassigned });
-      }
-      const plan: SchemaCanvasLayoutPlan = {
-        lanes: normalizedLanes,
-        summary: summary ? String(summary) : undefined,
-      };
-      await context.organizeCanvas(plan);
-      return result({
-        organized: true,
-        lanes: plan.lanes.map((lane) => ({
-          name: lane.name,
-          tableCount: lane.tableIds.length,
-        })),
-        summary: plan.summary,
-      });
-    },
-  };
-
   return [
     overview,
     catalog,
@@ -463,6 +390,5 @@ export const createSchemaTools = (
     neighbors,
     relationshipMap,
     focus,
-    organize,
   ];
 };

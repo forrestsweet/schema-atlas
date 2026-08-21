@@ -55,6 +55,15 @@ export type SchemaManualRelationship = {
   createdAt: string;
 };
 
+export type SchemaCanvasState = {
+  positions: Record<string, { x: number; y: number }>;
+  viewport?: {
+    x: number;
+    y: number;
+    zoom: number;
+  };
+};
+
 export type SchemaModel = {
   tables: SchemaTable[];
   relationships: SchemaRelationship[];
@@ -66,14 +75,6 @@ export type SchemaModel = {
     relationshipCount: number;
     parseMs: number;
   };
-};
-
-export type SchemaCanvasLayoutPlan = {
-  lanes: Array<{
-    name: string;
-    tableIds: string[];
-  }>;
-  summary?: string;
 };
 
 export type WorkerParseRequest = {

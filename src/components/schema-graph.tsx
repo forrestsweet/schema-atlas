@@ -10,10 +10,10 @@ import {
 } from "react";
 import type { Graph as G6Graph, NodeData } from "@antv/g6";
 import type { ElkExtendedEdge, ElkNode } from "elkjs";
+import { Trash2 } from "lucide-react";
 import type {
-  RelationshipCardinality,
+  SchemaCanvasState,
   SchemaColumn,
-  SchemaCanvasLayoutPlan,
   SchemaModel,
   SchemaTable,
 } from "@/lib/schema-types";
@@ -49,13 +49,14 @@ export type RelationshipEndpoint = {
 
 export type SchemaGraphHandle = {
   fit: () => void;
-  organize: (plan: SchemaCanvasLayoutPlan) => Promise<void>;
   zoomIn: () => void;
   zoomOut: () => void;
   focus: (tableId: string) => void;
 };
 
 type Props = {
+  canvasState?: SchemaCanvasState;
+  documentId: string;
   schema: SchemaModel;
   selectedTableId?: string;
   selectedRelationshipId?: string;
@@ -64,8 +65,10 @@ type Props = {
     source: RelationshipEndpoint,
     target: RelationshipEndpoint,
   ) => void;
+  onCanvasStateChange: (canvas: SchemaCanvasState) => void;
+  onDeleteRelationship: (relationshipId: string) => void;
   onSelectTable: (tableId: string) => void;
-  onSelectRelationship: (relationshipId: string) => void;
+  onSelectRelationship: (relationshipId?: string) => void;
 };
 
 type SchemaPointerEvent = {
@@ -82,7 +85,43 @@ type RelationshipDraft = {
   current: { x: number; y: number };
   source: RelationshipEndpoint;
   start: { x: number; y: number };
+  target?: RelationshipEndpoint;
+  targetPort?: string;
 };
+
+type RelationshipAction = {
+  id: string;
+  x: number;
+  y: number;
+};
+
+function validPosition(
+  position: { x?: number; y?: number } | undefined,
+): position is { x: number; y: number } {
+  return Boolean(
+    position && Number.isFinite(position.x) && Number.isFinite(position.y),
+  );
+}
+
+function currentCanvasState(graph: G6Graph): SchemaCanvasState {
+  const [x, y] = graph.getPosition();
+  return {
+    positions: Object.fromEntries(
+      graph.getNodeData().map((node) => [
+        node.id,
+        {
+          x: Number(node.style?.x || 0),
+          y: Number(node.style?.y || 0),
+        },
+      ]),
+    ),
+    viewport: {
+      x: Number(x || 0),
+      y: Number(y || 0),
+      zoom: graph.getZoom(),
+    },
+  };
+}
 
 function portColumn(event: SchemaPointerEvent): string | undefined {
   const originalTarget = event.originalTarget;
@@ -94,6 +133,16 @@ function portColumn(event: SchemaPointerEvent): string | undefined {
   if (!className.startsWith("port-")) return undefined;
   const separator = className.indexOf(":");
   return separator >= 0 ? className.slice(separator + 1) : undefined;
+}
+
+function portKey(event: SchemaPointerEvent): string | undefined {
+  const originalTarget = event.originalTarget;
+  const className = String(
+    originalTarget?.className ||
+      originalTarget?.getAttribute?.("className") ||
+      "",
+  );
+  return className.startsWith("port-") ? className.slice(5) : undefined;
 }
 
 function isCollapseToggle(event: SchemaPointerEvent): boolean {
@@ -124,7 +173,6 @@ export type GraphRelationship = {
   sourceColumns: string[];
   targetColumns: string[];
   kind: "constraint" | "manual";
-  cardinality?: RelationshipCardinality;
 };
 
 function graphRelationships(schema: SchemaModel): GraphRelationship[] {
@@ -143,7 +191,6 @@ function graphRelationships(schema: SchemaModel): GraphRelationship[] {
       sourceColumns: relationship.sourceColumns,
       targetColumns: relationship.targetColumns,
       kind: "manual",
-      cardinality: relationship.cardinality,
     }),
   );
   return [...constraints, ...manual];
@@ -175,14 +222,6 @@ type SchemaLayout = {
   relationships: Map<string, RoutedRelationship>;
 };
 
-function relationshipLabel(relationship: GraphRelationship): string {
-  if (relationship.cardinality === "one-to-one") return "1 : 1";
-  if (relationship.cardinality === "one-to-many") return "1 : N";
-  if (relationship.cardinality === "many-to-one") return "N : 1";
-  if (relationship.cardinality === "many-to-many") return "N : N";
-  return "FK";
-}
-
 function relationshipEdgeData(
   relationship: GraphRelationship,
   route: RoutedRelationship,
@@ -194,8 +233,6 @@ function relationshipEdgeData(
     data: {
       name: relationship.name,
       relationshipKind: relationship.kind,
-      controlPoints: route.controlPoints,
-      endpointLabel: relationshipLabel(relationship),
       sourceColumn: relationship.sourceColumns[0] || "",
       sourcePort: route.sourcePort,
       targetColumn: relationship.targetColumns[0] || "",
@@ -663,11 +700,15 @@ function relatedIds(schema: SchemaModel, rootId?: string): Set<string> {
 
 export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaGraph(
   {
+    canvasState,
+    documentId,
     schema,
     selectedTableId,
     selectedRelationshipId,
     viewMode,
     onCreateRelationship,
+    onCanvasStateChange,
+    onDeleteRelationship,
     onSelectTable,
     onSelectRelationship,
   },
@@ -684,15 +725,23 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
   const relationshipDraftRef = useRef<RelationshipDraft | undefined>(
     undefined,
   );
+  const canvasStateRef = useRef(canvasState);
+  const onCanvasStateChangeRef = useRef(onCanvasStateChange);
+  const onDeleteRelationshipRef = useRef(onDeleteRelationship);
   const collapsedTableIdsRef = useRef(new Set<string>());
   const collapseStructureKeyRef = useRef<string | undefined>(undefined);
   const [relationshipDraft, setRelationshipDraft] =
     useState<RelationshipDraft>();
+  const [relationshipAction, setRelationshipAction] =
+    useState<RelationshipAction>();
   const [rendering, setRendering] = useState(true);
   const scopeRoot = viewMode === "related" ? selectedTableId : undefined;
 
   selectedTableRef.current = selectedTableId;
   selectedRelationshipRef.current = selectedRelationshipId;
+  canvasStateRef.current = canvasState;
+  onCanvasStateChangeRef.current = onCanvasStateChange;
+  onDeleteRelationshipRef.current = onDeleteRelationship;
 
   const visibleData = useMemo(() => {
     const ids = viewMode === "related" ? relatedIds(schema, scopeRoot) : new Set(schema.tables.map((table) => table.id));
@@ -727,83 +776,6 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
 
   useImperativeHandle(forwardedRef, () => ({
     fit: () => void graphRef.current?.fitView({ when: "always" }, { duration: 280 }),
-    organize: async (plan) => {
-      const graph = graphRef.current;
-      const data = visibleDataRef.current;
-      if (!graph || data.tables.length === 0) return;
-      const tablesById = new Map(data.tables.map((table) => [table.id, table]));
-      const assigned = new Set<string>();
-      const lanes = plan.lanes
-        .map((lane) => ({
-          ...lane,
-          tableIds: lane.tableIds.filter((tableId) => {
-            if (!tablesById.has(tableId) || assigned.has(tableId)) return false;
-            assigned.add(tableId);
-            return true;
-          }),
-        }))
-        .filter((lane) => lane.tableIds.length > 0);
-      const unassigned = data.tables
-        .map((table) => table.id)
-        .filter((tableId) => !assigned.has(tableId));
-      if (unassigned.length > 0) {
-        if (lanes.length === 0) lanes.push({ name: "其他", tableIds: [] });
-        unassigned.forEach((tableId) => {
-          const shortest = lanes.reduce((left, right) =>
-            left.tableIds.length <= right.tableIds.length ? left : right,
-          );
-          shortest.tableIds.push(tableId);
-        });
-      }
-      if (lanes.length === 0) return;
-
-      const columnGap = 190;
-      const rowGap = 78;
-      const positions = new Map<string, { x: number; y: number }>();
-      const laneHeights = lanes.map((lane) =>
-        lane.tableIds.reduce((total, tableId, index) => {
-          const table = tablesById.get(tableId)!;
-          const geometry = tableGeometry(table);
-          const height = collapsedTableIdsRef.current.has(tableId)
-            ? geometry.collapsedHeight
-            : geometry.height;
-          return total + height + (index > 0 ? rowGap : 0);
-        }, 0),
-      );
-      const maxHeight = Math.max(...laneHeights);
-      lanes.forEach((lane, column) => {
-        let cursorY = (maxHeight - laneHeights[column]) / 2;
-        lane.tableIds.forEach((tableId) => {
-          const table = tablesById.get(tableId)!;
-          const geometry = tableGeometry(table);
-          const height = collapsedTableIdsRef.current.has(tableId)
-            ? geometry.collapsedHeight
-            : geometry.height;
-          positions.set(tableId, {
-            x: column * (CARD_WIDTH + columnGap) + CARD_WIDTH / 2,
-            y: cursorY + height / 2,
-          });
-          cursorY += height + rowGap;
-        });
-      });
-      graph.updateNodeData(
-        data.tables.flatMap((table) => {
-          const position = positions.get(table.id);
-          return position ? [{ id: table.id, style: position }] : [];
-        }),
-      );
-      graph.updateEdgeData(
-        data.relationships.flatMap((relationship) => {
-          const route = incrementalRoute(graph, relationship);
-          return route ? [relationshipEdgeData(relationship, route)] : [];
-        }),
-      );
-      syncConnectedPorts(graph);
-      await graph.draw();
-      if (graphRef.current === graph) {
-        await graph.fitView({ when: "always" }, { duration: 320 });
-      }
-    },
     zoomIn: () => void graphRef.current?.zoomBy(1.28, { duration: 180 }),
     zoomOut: () => void graphRef.current?.zoomBy(0.78, { duration: 180 }),
     focus: (tableId: string) => {
@@ -817,9 +789,12 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
 
   useEffect(() => {
     const initialData = visibleDataRef.current;
+    const initialCanvasState = canvasStateRef.current;
     if (!containerRef.current || initialData.tables.length === 0) return;
     let cancelled = false;
+    let canvasStateTimer: ReturnType<typeof setTimeout> | undefined;
     let resizeObserver: ResizeObserver | undefined;
+    let shouldPersistCanvasState = false;
     setRendering(true);
 
     void Promise.all([
@@ -833,6 +808,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
         CommonEvent,
         EdgeEvent,
         ExtensionCategory,
+        GraphEvent,
         getExtension,
         Graph,
         NodeEvent,
@@ -1100,9 +1076,12 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
 
         const geometry = tableGeometry(table);
         const canCollapse = table.columns.length > COLLAPSED_CARD_ROWS;
+        const storedPosition = initialCanvasState?.positions[table.id];
         return {
           id: table.id,
-          style: schemaLayout.positions.get(table.id),
+          style: validPosition(storedPosition)
+            ? storedPosition
+            : schemaLayout.positions.get(table.id),
           data: {
             name: table.displayName,
             comment: table.comment,
@@ -1124,10 +1103,31 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
         !portColumn(event as SchemaPointerEvent) &&
         !isCollapseToggle(event as SchemaPointerEvent);
 
+      const updateRelationshipRoutes = () => {
+        const updates = visibleDataRef.current.relationships.flatMap(
+          (relationship) => {
+            const route = incrementalRoute(graph, relationship);
+            return route ? [relationshipEdgeData(relationship, route)] : [];
+          },
+        );
+        if (updates.length > 0) graph.updateEdgeData(updates);
+        syncConnectedPorts(graph);
+      };
+
+      const persistCurrentCanvasState = () => {
+        if (!shouldPersistCanvasState || cancelled) return;
+        onCanvasStateChangeRef.current(currentCanvasState(graph));
+      };
+
+      const scheduleCanvasStatePersistence = () => {
+        if (!shouldPersistCanvasState || cancelled) return;
+        if (canvasStateTimer) clearTimeout(canvasStateTimer);
+        canvasStateTimer = setTimeout(persistCurrentCanvasState, 180);
+      };
+
       const graph: G6Graph = new Graph({
         container: containerRef.current,
         animation: false,
-        autoFit: { type: "view", options: { when: "always" } },
         padding: VIEW_PADDING,
         plugins: [
           {
@@ -1160,6 +1160,9 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
               : [];
             const canCollapse = Boolean(datum.data?.canCollapse);
             const collapsed = canCollapse && Boolean(datum.data?.collapsed);
+            const connectionTargetPort = String(
+              datum.data?.connectionTargetPort || "",
+            );
             const visibleRows = collapsed
               ? rows.slice(0, COLLAPSED_CARD_ROWS)
               : rows;
@@ -1207,22 +1210,38 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
                   {
                     key: `left:${row.key}`,
                     placement: [0, placementY] as [number, number],
-                    r: row.linkedLeft ? 4 : 3.5,
-                    fill: "#ffffff",
-                    stroke: row.linkedLeft ? "#6366f1" : "#a3a3a3",
-                    lineWidth: row.linkedLeft ? 1.8 : 1.2,
-                    opacity: row.linkedLeft ? 1 : 0.72,
+                    r: connectionTargetPort === `left:${row.key}`
+                      ? 7
+                      : row.linkedLeft ? 4 : 3.5,
+                    fill: connectionTargetPort === `left:${row.key}`
+                      ? "#d1fae5"
+                      : "#ffffff",
+                    stroke: connectionTargetPort === `left:${row.key}`
+                      ? "#059669"
+                      : row.linkedLeft ? "#6366f1" : "#a3a3a3",
+                    lineWidth: connectionTargetPort === `left:${row.key}`
+                      ? 2.5
+                      : row.linkedLeft ? 1.8 : 1.2,
+                    opacity: connectionTargetPort === `left:${row.key}` || row.linkedLeft ? 1 : 0.72,
                     cursor: "crosshair",
                     pointerEvents: "all",
                   },
                   {
                     key: `right:${row.key}`,
                     placement: [1, placementY] as [number, number],
-                    r: row.linkedRight ? 4 : 3.5,
-                    fill: "#ffffff",
-                    stroke: row.linkedRight ? "#6366f1" : "#a3a3a3",
-                    lineWidth: row.linkedRight ? 1.8 : 1.2,
-                    opacity: row.linkedRight ? 1 : 0.72,
+                    r: connectionTargetPort === `right:${row.key}`
+                      ? 7
+                      : row.linkedRight ? 4 : 3.5,
+                    fill: connectionTargetPort === `right:${row.key}`
+                      ? "#d1fae5"
+                      : "#ffffff",
+                    stroke: connectionTargetPort === `right:${row.key}`
+                      ? "#059669"
+                      : row.linkedRight ? "#6366f1" : "#a3a3a3",
+                    lineWidth: connectionTargetPort === `right:${row.key}`
+                      ? 2.5
+                      : row.linkedRight ? 1.8 : 1.2,
+                    opacity: connectionTargetPort === `right:${row.key}` || row.linkedRight ? 1 : 0.72,
                     cursor: "crosshair",
                     pointerEvents: "all",
                   },
@@ -1245,12 +1264,9 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
           },
         },
         edge: {
-          type: "polyline",
+          type: "cubic-horizontal",
           style: (datum) => {
             const kind = String(datum.data?.relationshipKind || "constraint");
-            const controlPoints = Array.isArray(datum.data?.controlPoints)
-              ? (datum.data.controlPoints as Array<[number, number]>)
-              : [];
             if (kind === "manual") {
               return {
                 stroke: "#059669",
@@ -1258,22 +1274,10 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
                 lineWidth: 2.8,
                 lineDash: 0,
                 endArrow: true,
-                radius: 10,
-                router: false,
-                controlPoints,
+                curvePosition: [0.45, 0.45],
                 increasedLineWidthForHitTesting: 14,
                 sourcePort: String(datum.data?.sourcePort || ""),
                 targetPort: String(datum.data?.targetPort || ""),
-                labelText: String(datum.data?.endpointLabel || ""),
-                labelFill: "#047857",
-                labelFontSize: 11,
-                labelFontWeight: 600,
-                labelAutoRotate: false,
-                labelOpacity: 0,
-                labelBackground: true,
-                labelBackgroundFill: "#ffffff",
-                labelBackgroundOpacity: 0.96,
-                labelBackgroundPadding: [4, 7, 4, 7],
                 zIndex: 2,
               };
             }
@@ -1282,9 +1286,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
               strokeOpacity: 0.64,
               lineWidth: 1.5,
               endArrow: true,
-              radius: 10,
-              router: false,
-              controlPoints,
+              curvePosition: [0.45, 0.45],
               increasedLineWidthForHitTesting: 12,
               sourcePort: String(datum.data?.sourcePort || ""),
               targetPort: String(datum.data?.targetPort || ""),
@@ -1295,7 +1297,6 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
               halo: true,
               haloLineWidth: 6,
               haloStrokeOpacity: 0.12,
-              labelOpacity: 1,
               lineWidth: 2.8,
               strokeOpacity: 1,
             },
@@ -1303,7 +1304,6 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
               halo: true,
               haloLineWidth: 7,
               haloStrokeOpacity: 0.14,
-              labelOpacity: 1,
               lineWidth: 3.2,
               strokeOpacity: 1,
               zIndex: 10,
@@ -1365,16 +1365,64 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
         graph.updateBehavior({ key: "drag-table", enable: false });
       });
 
+      graph.on(NodeEvent.DRAG_END, () => {
+        updateRelationshipRoutes();
+        void graph.draw();
+        persistCurrentCanvasState();
+      });
+
+      graph.on(GraphEvent.AFTER_TRANSFORM, scheduleCanvasStatePersistence);
+
       graph.on(CommonEvent.POINTER_MOVE, (event) => {
         if (!relationshipDraftRef.current || !containerRef.current) return;
+        const pointerEvent = event as unknown as SchemaPointerEvent;
         const position = pointerPosition(
-          event as unknown as SchemaPointerEvent,
+          pointerEvent,
           containerRef.current,
         );
         if (!position) return;
+        const targetColumn = portColumn(pointerEvent);
+        const targetPort = portKey(pointerEvent);
+        const targetTableId = String(pointerEvent.target?.id || "");
+        const source = relationshipDraftRef.current.source;
+        const target =
+          pointerEvent.targetType === "node" &&
+          targetColumn &&
+          targetPort &&
+          targetTableId &&
+          (source.tableId !== targetTableId ||
+            source.column !== targetColumn)
+            ? { column: targetColumn, tableId: targetTableId }
+            : undefined;
+        const nextTargetPort = target ? targetPort : undefined;
+        const previousTarget = relationshipDraftRef.current.target;
+        const targetChanged =
+          previousTarget?.tableId !== target?.tableId ||
+          relationshipDraftRef.current.targetPort !== nextTargetPort;
+        if (targetChanged) {
+          const updates = [];
+          if (previousTarget && graph.hasNode(previousTarget.tableId)) {
+            updates.push({
+              id: previousTarget.tableId,
+              data: { connectionTargetPort: "" },
+            });
+          }
+          if (target && graph.hasNode(target.tableId)) {
+            updates.push({
+              id: target.tableId,
+              data: { connectionTargetPort: targetPort },
+            });
+          }
+          if (updates.length > 0) {
+            graph.updateNodeData(updates);
+            void graph.draw();
+          }
+        }
         const next = {
           ...relationshipDraftRef.current,
           current: position,
+          target,
+          targetPort: nextTargetPort,
         };
         relationshipDraftRef.current = next;
         setRelationshipDraft(next);
@@ -1384,24 +1432,35 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
         const draft = relationshipDraftRef.current;
         if (!draft) return;
         const pointerEvent = event as unknown as SchemaPointerEvent;
-        const targetColumn = portColumn(pointerEvent);
-        const targetTableId = String(pointerEvent.target?.id || "");
+        const pointerTargetColumn = portColumn(pointerEvent);
+        const pointerTargetTableId = String(pointerEvent.target?.id || "");
+        const target = draft.target ?? (
+          pointerEvent.targetType === "node" &&
+          pointerTargetColumn &&
+          pointerTargetTableId
+            ? {
+                column: pointerTargetColumn,
+                tableId: pointerTargetTableId,
+              }
+            : undefined
+        );
         relationshipDraftRef.current = undefined;
         setRelationshipDraft(undefined);
+        if (draft.target && graph.hasNode(draft.target.tableId)) {
+          graph.updateNodeData([
+            { id: draft.target.tableId, data: { connectionTargetPort: "" } },
+          ]);
+          void graph.draw();
+        }
         graph.updateBehavior({ key: "drag-table", enable: canDragTable });
         if (
-          pointerEvent.targetType !== "node" ||
-          !targetColumn ||
-          !targetTableId ||
-          (draft.source.tableId === targetTableId &&
-            draft.source.column === targetColumn)
+          !target ||
+          (draft.source.tableId === target.tableId &&
+            draft.source.column === target.column)
         ) {
           return;
         }
-        onCreateRelationship(draft.source, {
-          column: targetColumn,
-          tableId: targetTableId,
-        });
+        onCreateRelationship(draft.source, target);
       });
 
       graph.on(NodeEvent.CLICK, (event) => {
@@ -1451,14 +1510,35 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
           void graph.draw();
           return;
         }
-        if (id) onSelectTable(id);
+        if (id) {
+          setRelationshipAction(undefined);
+          onSelectTable(id);
+        }
       });
 
       graph.on(EdgeEvent.CLICK, (event) => {
-        const id = String(
-          (event as unknown as { target?: { id?: string } }).target?.id || "",
+        const pointerEvent = event as unknown as SchemaPointerEvent;
+        const id = String(pointerEvent.target?.id || "");
+        if (!id) return;
+        onSelectRelationship(id);
+        const relationship = visibleDataRef.current.relationships.find(
+          (candidate) => candidate.id === id,
         );
-        if (id) onSelectRelationship(id);
+        const position = containerRef.current
+          ? pointerPosition(pointerEvent, containerRef.current)
+          : undefined;
+        setRelationshipAction(
+          relationship?.kind === "manual" && position
+            ? { id, ...position }
+            : undefined,
+        );
+      });
+
+      graph.on(CommonEvent.CLICK, (event) => {
+        const pointerEvent = event as unknown as SchemaPointerEvent;
+        if (pointerEvent.targetType !== "canvas") return;
+        setRelationshipAction(undefined);
+        onSelectRelationship(undefined);
       });
 
       graph.on(EdgeEvent.POINTER_ENTER, (event) => {
@@ -1483,6 +1563,26 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
       await graph.render();
       if (cancelled) return;
 
+      updateRelationshipRoutes();
+      await graph.draw();
+      if (cancelled) return;
+
+      const initialViewport = initialCanvasState?.viewport;
+      if (
+        initialViewport &&
+        Number.isFinite(initialViewport.x) &&
+        Number.isFinite(initialViewport.y) &&
+        Number.isFinite(initialViewport.zoom) &&
+        initialViewport.zoom > 0
+      ) {
+        await graph.zoomTo(initialViewport.zoom, false, [0, 0]);
+        await graph.translateTo(
+          [initialViewport.x, initialViewport.y],
+          false,
+        );
+      }
+      if (cancelled) return;
+
       const currentSelectedTableId = selectedTableRef.current;
       const nodeIds = new Set(graph.getNodeData().map((node) => node.id));
       const edgeIds = new Set(graph.getEdgeData().map((edge) => edge.id));
@@ -1500,6 +1600,13 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
         ]);
       }
       previousSelectedRelationshipRef.current = currentSelectedRelationshipId;
+      shouldPersistCanvasState = true;
+      const hasCompleteStoredCanvas =
+        Boolean(initialViewport) &&
+        initialData.tables.every((table) =>
+          validPosition(initialCanvasState?.positions[table.id]),
+        );
+      if (!hasCompleteStoredCanvas) persistCurrentCanvasState();
       if (!cancelled) setRendering(false);
 
       resizeObserver = new ResizeObserver(([entry]) => {
@@ -1511,6 +1618,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
 
     return () => {
       cancelled = true;
+      if (canvasStateTimer) clearTimeout(canvasStateTimer);
       resizeObserver?.disconnect();
       graphRef.current?.destroy();
       graphRef.current = null;
@@ -1519,6 +1627,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
     onSelectRelationship,
     onSelectTable,
     onCreateRelationship,
+    documentId,
     tableStructureKey,
   ]);
 
@@ -1604,9 +1713,58 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
     }
   }, [selectedRelationshipId]);
 
+  useEffect(() => {
+    if (!relationshipAction) return;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Delete" && event.key !== "Backspace") return;
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          target.closest("input, textarea, [contenteditable='true']"))
+      ) {
+        return;
+      }
+      event.preventDefault();
+      setRelationshipAction(undefined);
+      onDeleteRelationshipRef.current(relationshipAction.id);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [relationshipAction]);
+
+  const visibleRelationshipAction =
+    relationshipAction?.id === selectedRelationshipId &&
+    visibleData.relationships.some(
+      (relationship) =>
+        relationship.id === relationshipAction?.id &&
+        relationship.kind === "manual",
+    )
+      ? relationshipAction
+      : undefined;
+
   return (
     <div className="schema-graph-surface relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
+      {visibleRelationshipAction ? (
+        <button
+          aria-label="删除手动关系"
+          className="absolute z-30 flex size-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border border-destructive/30 bg-background text-destructive shadow-md transition-colors hover:bg-destructive hover:text-destructive-foreground"
+          onClick={() => {
+            setRelationshipAction(undefined);
+            onDeleteRelationshipRef.current(visibleRelationshipAction.id);
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+          style={{
+            left: visibleRelationshipAction.x,
+            top: visibleRelationshipAction.y,
+          }}
+          title="删除关系"
+          type="button"
+        >
+          <Trash2 className="size-3.5" />
+        </button>
+      ) : null}
       {relationshipDraft ? (
         <svg
           aria-hidden="true"
@@ -1624,14 +1782,24 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
               <path d="M0,0 L8,4 L0,8 Z" fill="#059669" />
             </marker>
           </defs>
+          {relationshipDraft.target ? (
+            <circle
+              cx={relationshipDraft.current.x}
+              cy={relationshipDraft.current.y}
+              fill="rgba(5, 150, 105, 0.16)"
+              r="9"
+              stroke="#059669"
+              strokeWidth="2"
+            />
+          ) : null}
           <path
             d={`M ${relationshipDraft.start.x} ${relationshipDraft.start.y} C ${relationshipDraft.start.x + 60} ${relationshipDraft.start.y}, ${relationshipDraft.current.x - 60} ${relationshipDraft.current.y}, ${relationshipDraft.current.x} ${relationshipDraft.current.y}`}
             fill="none"
             markerEnd="url(#relationship-draft-arrow)"
             stroke="#059669"
-            strokeDasharray="7 5"
+            strokeDasharray={relationshipDraft.target ? undefined : "7 5"}
             strokeLinecap="round"
-            strokeWidth="2.5"
+            strokeWidth={relationshipDraft.target ? 3.25 : 2.5}
           />
         </svg>
       ) : null}

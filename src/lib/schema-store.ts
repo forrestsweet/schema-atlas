@@ -1,4 +1,4 @@
-import type { SchemaModel } from "@/lib/schema-types";
+import type { SchemaCanvasState, SchemaModel } from "@/lib/schema-types";
 
 const DATABASE_NAME = "schema-atlas";
 const DATABASE_VERSION = 2;
@@ -11,6 +11,7 @@ export type SchemaDocument = {
   name: string;
   sql: string;
   schema: SchemaModel;
+  canvas?: SchemaCanvasState;
   createdAt: string;
   updatedAt: string;
 };

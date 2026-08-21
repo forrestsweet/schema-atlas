@@ -32,7 +32,6 @@ import {
   type SchemaGraphHandle,
 } from "@/components/schema-graph";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Card } from "@/components/ui/card";
 import {
   Dialog,
@@ -69,7 +68,7 @@ import {
 } from "@/lib/schema-store";
 import { cn } from "@/lib/utils";
 import type {
-  SchemaCanvasLayoutPlan,
+  SchemaCanvasState,
   SchemaManualRelationship,
   SchemaModel,
   WorkerParseResponse,
@@ -144,13 +143,6 @@ function ImportSqlMenu({
     </DropdownMenu>
   );
 }
-
-const cardinalityLabels = {
-  "one-to-one": "一对一",
-  "one-to-many": "一对多",
-  "many-to-one": "多对一",
-  "many-to-many": "多对多",
-} as const;
 
 export default function Home() {
   const workerRef = useRef<Worker | null>(null);
@@ -302,10 +294,6 @@ export default function Home() {
     focusTableRef.current = selectAndFocus;
   }, [selectAndFocus]);
 
-  const organizeCanvas = useCallback(async (plan: SchemaCanvasLayoutPlan) => {
-    await graphRef.current?.organize(plan);
-  }, []);
-
   const persistSchema = useCallback(async (nextSchema: SchemaModel) => {
     const document = currentDocumentRef.current;
     if (!document) throw new Error("当前没有可更新的数据库结构。");
@@ -326,15 +314,46 @@ export default function Home() {
     );
   }, []);
 
+  const persistCanvasState = useCallback((canvas: SchemaCanvasState) => {
+    if (!currentDocument) return;
+    const nextCanvas: SchemaCanvasState = {
+      ...canvas,
+      positions: {
+        ...(currentDocument.canvas?.positions ?? {}),
+        ...canvas.positions,
+      },
+    };
+    if (JSON.stringify(currentDocument.canvas) === JSON.stringify(nextCanvas)) {
+      return;
+    }
+    const updatedDocument: SchemaDocument = {
+      ...currentDocument,
+      canvas: nextCanvas,
+    };
+    currentDocumentRef.current = updatedDocument;
+    setCurrentDocument((current) =>
+      current?.id === updatedDocument.id ? updatedDocument : current,
+    );
+    setDocuments((current) =>
+      current.map((item) =>
+        item.id === updatedDocument.id ? updatedDocument : item,
+      ),
+    );
+    void saveSchemaDocument(updatedDocument).catch((reason: unknown) =>
+      setError(
+        reason instanceof Error ? reason.message : "无法保存画布位置",
+      ),
+    );
+  }, [currentDocument]);
+
   const schemaAgentContext = useMemo<SchemaAgentContext>(
     () => ({
       focusTable: (tableId) => focusTableRef.current(tableId),
       getDocumentName: () => currentDocumentRef.current?.name,
       getSchema: () => schemaRef.current,
       getSelectedTableId: () => selectedTableIdRef.current,
-      organizeCanvas,
     }),
-    [organizeCanvas],
+    [],
   );
 
   const openDocument = (document: SchemaDocument) => {
@@ -443,27 +462,6 @@ export default function Home() {
     setPastedSql("");
   };
 
-  const manualRelationships = schema?.manualRelationships ?? [];
-  const tableNames = new Map(
-    (schema?.tables ?? []).map((table) => [table.id, table.displayName]),
-  );
-  const allRelationships = [
-    ...(schema?.relationships ?? []).map((relationship) => ({
-      ...relationship,
-      kind: "constraint" as const,
-      origin: "database" as const,
-      explanation: "数据库 DDL 中显式声明的外键约束。",
-      cardinality: undefined,
-    })),
-    ...manualRelationships.map((relationship) => ({
-      ...relationship,
-      origin: "manual" as const,
-      explanation: "用户在画布中直接创建的关系。",
-    })),
-  ];
-  const selectedRelationship = allRelationships.find(
-    (relationship) => relationship.id === selectedRelationshipId,
-  );
   const createManualRelationship = useCallback(async (
     sourceEndpoint: RelationshipEndpoint,
     targetEndpoint: RelationshipEndpoint,
@@ -513,8 +511,6 @@ export default function Home() {
         relationship,
       ],
     });
-    setSelectedTableId(relationship.sourceTableId);
-    setSelectedRelationshipId(relationship.id);
   }, [persistSchema]);
 
   const createRelationshipFromCanvas = useCallback(
@@ -528,7 +524,7 @@ export default function Home() {
     [createManualRelationship],
   );
 
-  const deleteManualRelationship = async (id: string) => {
+  const deleteManualRelationship = useCallback(async (id: string) => {
     const currentSchema = schemaRef.current;
     if (!currentSchema) return;
     await persistSchema({
@@ -538,7 +534,13 @@ export default function Home() {
       ),
     });
     setSelectedRelationshipId(undefined);
-  };
+  }, [persistSchema]);
+
+  const deleteRelationshipFromCanvas = useCallback((id: string) => {
+    void deleteManualRelationship(id).catch((reason: unknown) =>
+      setError(reason instanceof Error ? reason.message : "无法删除关系"),
+    );
+  }, [deleteManualRelationship]);
 
   return (
     <TooltipProvider delayDuration={250}>
@@ -663,11 +665,15 @@ export default function Home() {
               {schema && schema.tables.length ? (
                 <SchemaGraph
                   ref={graphRef}
+                  canvasState={currentDocument?.canvas}
+                  documentId={currentDocument?.id ?? ""}
                   schema={schema}
                   selectedTableId={selectedTableId}
                   selectedRelationshipId={selectedRelationshipId}
                   viewMode={viewMode}
                   onCreateRelationship={createRelationshipFromCanvas}
+                  onDeleteRelationship={deleteRelationshipFromCanvas}
+                  onCanvasStateChange={persistCanvasState}
                   onSelectTable={selectTableFromGraph}
                   onSelectRelationship={setSelectedRelationshipId}
                 />
@@ -690,66 +696,6 @@ export default function Home() {
                 <IconControl label="适应画布" onClick={() => graphRef.current?.fit()}><Maximize2 /></IconControl>
                 {selectedTableId ? <IconControl label="定位选中表" onClick={() => graphRef.current?.focus(selectedTableId)}><Focus /></IconControl> : null}
               </Card>
-
-              {selectedRelationship ? (
-                <Card className="absolute bottom-3 right-3 z-20 w-[360px] p-4 shadow-xl">
-                  <div className="flex items-center gap-2">
-                    <strong className="text-sm">关系详情</strong>
-                    <Badge variant={selectedRelationship.origin === "database" ? "outline" : "secondary"}>
-                      {selectedRelationship.origin === "database"
-                        ? "数据库外键"
-                        : "手动关系"}
-                    </Badge>
-                    <Button
-                      className="ml-auto h-7 px-2"
-                      onClick={() => setSelectedRelationshipId(undefined)}
-                      size="sm"
-                      variant="ghost"
-                    >
-                      关闭
-                    </Button>
-                  </div>
-                  <div className="mt-4 text-sm font-medium">
-                    {tableNames.get(selectedRelationship.sourceTableId)}.
-                    {selectedRelationship.sourceColumns.join(", ")}
-                    <span className="mx-2 text-muted-foreground">→</span>
-                    {tableNames.get(selectedRelationship.targetTableId)}.
-                    {selectedRelationship.targetColumns.join(", ")}
-                  </div>
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {selectedRelationship.cardinality ? (
-                      <Badge variant="outline">
-                        {cardinalityLabels[selectedRelationship.cardinality]}
-                      </Badge>
-                    ) : null}
-                  </div>
-                  <p className="mt-3 text-sm">{selectedRelationship.explanation}</p>
-                  {selectedRelationship.origin === "database" ? (
-                    <p className="mt-3 text-xs text-muted-foreground">
-                      真实外键需要修改 SQL 后重新导入。
-                    </p>
-                  ) : (
-                    <Button
-                      className="mt-4"
-                      onClick={() =>
-                        void deleteManualRelationship(
-                          selectedRelationship.id,
-                        ).catch((reason: unknown) =>
-                          setError(
-                            reason instanceof Error
-                              ? reason.message
-                              : "无法删除关系",
-                          ),
-                        )
-                      }
-                      size="sm"
-                      variant="destructive"
-                    >
-                      <Trash2 />删除关系
-                    </Button>
-                  )}
-                </Card>
-              ) : null}
 
               {isParsing ? (
                 <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-background/75 backdrop-blur-sm">
