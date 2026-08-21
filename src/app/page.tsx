@@ -15,14 +15,12 @@ import {
   ClipboardPaste,
   Focus,
   GitFork,
-  Loader2,
   Maximize2,
   Pencil,
   Search,
   Sparkles,
   Trash2,
   Upload,
-  WandSparkles,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -89,11 +87,6 @@ type PendingImport = {
   sql: string;
 };
 
-type AiActionRequest = {
-  id: string;
-  prompt: string;
-};
-
 function IconControl({
   children,
   disabled = false,
@@ -121,6 +114,34 @@ function IconControl({
       </TooltipTrigger>
       <TooltipContent side="bottom">{label}</TooltipContent>
     </Tooltip>
+  );
+}
+
+function ImportSqlMenu({
+  align = "end",
+  onPaste,
+  onSelectFile,
+}: {
+  align?: "center" | "end" | "start";
+  onPaste: () => void;
+  onSelectFile: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button className="shrink-0">
+          <Upload />导入 SQL<ChevronDown />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align={align} className="w-40">
+        <DropdownMenuItem onSelect={onPaste}>
+          <ClipboardPaste />粘贴 SQL
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onSelectFile}>
+          <Upload />选择文件
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -163,9 +184,6 @@ export default function Home() {
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [selectedRelationshipId, setSelectedRelationshipId] = useState<string>();
   const [documentName, setDocumentName] = useState("");
-  const [organizing, setOrganizing] = useState(false);
-  const [aiActionRequest, setAiActionRequest] =
-    useState<AiActionRequest>();
 
   useEffect(() => {
     schemaRef.current = schema;
@@ -291,20 +309,7 @@ export default function Home() {
   }, [selectAndFocus]);
 
   const organizeCanvas = useCallback(async (plan: SchemaCanvasLayoutPlan) => {
-    setOrganizing(true);
-    try {
-      await graphRef.current?.organize(plan);
-    } finally {
-      setOrganizing(false);
-    }
-  }, []);
-
-  const requestAiOrganization = useCallback(() => {
-    setAiOpen(true);
-    setAiActionRequest({
-      id: crypto.randomUUID(),
-      prompt: "帮我重新整理一下画布布局，让表和关系更容易看清。",
-    });
+    await graphRef.current?.organize(plan);
   }, []);
 
   const persistSchema = useCallback(async (nextSchema: SchemaModel) => {
@@ -651,18 +656,6 @@ export default function Home() {
           ) : <div className="flex-1" />}
 
           {schema ? (
-            <div className="flex items-center gap-1">
-              <Button variant={viewMode === "all" ? "secondary" : "ghost"} onClick={() => setViewMode("all")}>全部表</Button>
-              <Button
-                variant={viewMode === "related" ? "secondary" : "ghost"}
-                disabled={!selectedTableId}
-                onClick={() => setViewMode("related")}
-              ><GitFork />关联子图</Button>
-            </div>
-          ) : null}
-
-          <input ref={fileInputRef} hidden type="file" onChange={handleFileInput} />
-          {schema ? (
             <Button
               variant={aiOpen ? "secondary" : "outline"}
               className="shrink-0"
@@ -671,12 +664,37 @@ export default function Home() {
               <Sparkles />Copilot
             </Button>
           ) : null}
-          <Button variant="outline" className="shrink-0" onClick={() => setPasteOpen(true)}>
-            <ClipboardPaste />粘贴 SQL
-          </Button>
-          <Button className="shrink-0" onClick={() => fileInputRef.current?.click()}>
-            <Upload />选择文件
-          </Button>
+
+          {schema ? (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="secondary" className="shrink-0">
+                  <GitFork />
+                  {viewMode === "all" ? "全部表" : "关联子图"}
+                  <ChevronDown />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-36">
+                <DropdownMenuItem onSelect={() => setViewMode("all")}>
+                  全部表
+                  {viewMode === "all" ? <Check className="ml-auto" /> : null}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={!selectedTableId}
+                  onSelect={() => setViewMode("related")}
+                >
+                  关联子图
+                  {viewMode === "related" ? <Check className="ml-auto" /> : null}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : null}
+
+          <input ref={fileInputRef} hidden type="file" onChange={handleFileInput} />
+          <ImportSqlMenu
+            onPaste={() => setPasteOpen(true)}
+            onSelectFile={() => fileInputRef.current?.click()}
+          />
         </header>
 
         <section className="min-h-0 flex-1">
@@ -697,25 +715,17 @@ export default function Home() {
               ) : !isParsing ? (
                 <div className="absolute inset-0 flex flex-col items-center justify-center text-center">
                   <h2 className="text-base font-semibold">导入 SQL</h2>
-                  <div className="mt-5 flex gap-2">
-                    <Button variant="outline" onClick={() => setPasteOpen(true)}><ClipboardPaste />粘贴 SQL</Button>
-                    <Button onClick={() => fileInputRef.current?.click()}><Upload />选择文件</Button>
+                  <div className="mt-5">
+                    <ImportSqlMenu
+                      align="center"
+                      onPaste={() => setPasteOpen(true)}
+                      onSelectFile={() => fileInputRef.current?.click()}
+                    />
                   </div>
                 </div>
               ) : null}
 
               <Card className="absolute right-3 top-3 z-10 flex gap-0.5 p-1 shadow-md">
-                <Button
-                  aria-label={organizing ? "正在整理画布" : "让助手整理画布"}
-                  className="h-8 gap-1.5 border-r pr-2.5 text-xs"
-                  disabled={organizing || !schema?.tables.length}
-                  onClick={requestAiOrganization}
-                  size="sm"
-                  variant="ghost"
-                >
-                  {organizing ? <Loader2 className="animate-spin" /> : <WandSparkles />}
-                  {organizing ? "整理中" : "帮我整理"}
-                </Button>
                 <IconControl label="放大" onClick={() => graphRef.current?.zoomIn()}><ZoomIn /></IconControl>
                 <IconControl label="缩小" onClick={() => graphRef.current?.zoomOut()}><ZoomOut /></IconControl>
                 <IconControl label="适应画布" onClick={() => graphRef.current?.fit()}><Maximize2 /></IconControl>
@@ -826,13 +836,7 @@ export default function Home() {
                 >
                   <AiSidebar
                     key={currentDocument?.id}
-                    actionRequest={aiActionRequest}
                     context={schemaAgentContext}
-                    onActionHandled={(id) =>
-                      setAiActionRequest((request) =>
-                        request?.id === id ? undefined : request,
-                      )
-                    }
                     onClose={() => setAiOpen(false)}
                     selectedTableName={selectedTable?.displayName}
                     workspaceId={currentDocument?.id ?? "schema-atlas"}

@@ -100,3 +100,19 @@
 @custom-variant data-open (&:where([data-state="open"], [data-open]:not([data-open="false"])));
 
 @custom-variant data-closed (&:where([data-state="closed"], [data-closed]:not([data-closed="false"])));
+
+.schema-graph-surface {
+  background-image: radial-gradient(
+    circle at 50% 38%,
+    color-mix(in oklab, var(--color-primary) 5%, transparent),
+    transparent 48%
+  );
+}
+
+.schema-graph-surface .g6-grid-line {
+  background-image: radial-gradient(
+    circle,
+    color-mix(in oklab, var(--color-foreground) 14%, transparent) 1px,
+    transparent 1.25px
+  ) !important;
+}

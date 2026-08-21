@@ -867,6 +867,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
             const custom = attributes as typeof attributes & {
               canCollapse?: boolean;
               cardHeaderHeight?: number;
+              collapseControlVisible?: boolean;
               columnRowsJson?: string;
               collapsed?: boolean;
               tableCommentText?: string;
@@ -880,19 +881,24 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
             const tableComment = String(custom.tableCommentText || "");
             const collapsed = Boolean(custom.collapsed);
             const canCollapse = Boolean(custom.canCollapse);
+            const showCollapseControl =
+              canCollapse && Boolean(custom.collapseControlVisible);
 
             this.upsert(
               "collapse-toggle-hit",
               GRect,
-              canCollapse ? {
-                x: right - 38,
-                y: top + 5,
-                width: 42,
-                height: 26,
-                radius: 4,
-                fill: "#f5f5f5",
-                stroke: "#e5e5e5",
+              showCollapseControl ? {
+                x: -27,
+                y: height / 2 - 1,
+                width: 54,
+                height: 24,
+                radius: 12,
+                fill: "#ffffff",
+                stroke: "#d4d4d4",
                 lineWidth: 1,
+                shadowColor: "rgba(0,0,0,.12)",
+                shadowBlur: 8,
+                shadowOffsetY: 2,
                 cursor: "pointer",
                 pointerEvents: "all",
               } : false,
@@ -901,10 +907,10 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
             this.upsert(
               "collapse-toggle",
               Text,
-              canCollapse ? {
+              showCollapseControl ? {
                 text: collapsed ? "展开" : "收起",
-                x: right - 17,
-                y: top + 18,
+                x: 0,
+                y: height / 2 + 11,
                 fill: "#525252",
                 fontFamily: "var(--font-geist-sans)",
                 fontSize: 10,
@@ -1119,6 +1125,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
             cardHeight: geometry.height,
             collapsedCardHeight: geometry.collapsedHeight,
             canCollapse,
+            collapseControlVisible: false,
             collapsed: canCollapse && collapsedTableIdsRef.current.has(table.id),
             columns: table.columns.length,
             rows,
@@ -1137,6 +1144,17 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
         animation: false,
         autoFit: { type: "view", options: { when: "always" } },
         padding: VIEW_PADDING,
+        plugins: [
+          {
+            type: "grid-line",
+            key: "canvas-dot-grid",
+            border: false,
+            follow: { translate: true, zoom: true },
+            lineWidth: 1,
+            size: 28,
+            stroke: "rgba(100, 116, 139, 0.1)",
+          },
+        ],
         zoomRange: [0.025, 4],
         data: {
           nodes: graphNodes,
@@ -1188,6 +1206,9 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
               tableCommentText: String(datum.data?.comment || ""),
               canCollapse,
               cardHeaderHeight: Number(datum.data?.cardHeaderHeight || 42),
+              collapseControlVisible: Boolean(
+                datum.data?.collapseControlVisible,
+              ),
               collapsed,
               columnRowsJson: JSON.stringify(visibleRows),
               port: true,
@@ -1318,6 +1339,32 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
           },
           "click-select",
         ],
+      });
+
+      graph.on(NodeEvent.POINTER_ENTER, (event) => {
+        const id = String(
+          (event as unknown as SchemaPointerEvent).target?.id || "",
+        );
+        if (!id) return;
+        const node = graph.getNodeData(id);
+        if (!node.data?.canCollapse || node.data.collapseControlVisible) return;
+        graph.updateNodeData([
+          { id, data: { collapseControlVisible: true } },
+        ]);
+        void graph.draw();
+      });
+
+      graph.on(NodeEvent.POINTER_LEAVE, (event) => {
+        const id = String(
+          (event as unknown as SchemaPointerEvent).target?.id || "",
+        );
+        if (!id) return;
+        const node = graph.getNodeData(id);
+        if (!node.data?.collapseControlVisible) return;
+        graph.updateNodeData([
+          { id, data: { collapseControlVisible: false } },
+        ]);
+        void graph.draw();
       });
 
       graph.on(NodeEvent.POINTER_DOWN, (event) => {
@@ -1560,7 +1607,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
   }, [selectedRelationshipId]);
 
   return (
-    <div className="relative h-full w-full">
+    <div className="schema-graph-surface relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
       {relationshipDraft ? (
         <svg
@@ -1590,32 +1637,6 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
           />
         </svg>
       ) : null}
-      <div className="absolute bottom-3 left-3 z-10 flex flex-wrap items-center gap-3 rounded-md border bg-background/95 px-3 py-2 text-[11px] text-muted-foreground shadow-sm backdrop-blur-sm">
-        <span className="font-medium text-foreground">
-          已按关系自动布局 · 拖动字段两侧连接点创建关系
-        </span>
-        {graphRelationships(schema).length > 0 ? (
-          <>
-          <span className="flex items-center gap-1.5">
-            <span className="w-7 border-t-2 border-slate-500" />数据库外键
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="w-7 border-t-2 border-dashed border-indigo-600" />AI 关系
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="w-7 border-t-[3px] border-emerald-600" />手动关系
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="size-2.5 rounded-full border-2 border-indigo-500 bg-white" />
-            此侧已接线
-          </span>
-          <span className="flex items-center gap-1.5">
-            <span className="size-2.5 rounded-full border border-neutral-400 bg-white" />
-            此侧可连接
-          </span>
-          </>
-        ) : null}
-      </div>
       {rendering ? (
         <div className="absolute inset-0 z-10 flex items-center justify-center gap-2 bg-background/70 text-xs text-muted-foreground backdrop-blur-sm">
           <span className="size-4 animate-spin rounded-full border-2 border-muted border-t-primary" />

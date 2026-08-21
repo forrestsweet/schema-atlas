@@ -23,6 +23,7 @@ import {
   ToolGroupTrigger,
 } from "@/components/assistant-ui/tool-group";
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { GenerationLoader } from "@/components/elements/loading-state";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { cn } from "@/lib/utils";
@@ -60,7 +61,9 @@ import {
 } from "lucide-react";
 import {
   createContext,
+  useEffect,
   useContext,
+  useState,
   type ComponentType,
   type FC,
   type PropsWithChildren,
@@ -164,7 +167,6 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
       }}
     >
       <ThreadPrimitive.Viewport
-        turnAnchor="top"
         data-slot="aui_thread-viewport"
         className="relative flex flex-1 flex-col overflow-x-auto overflow-y-scroll scroll-smooth"
       >
@@ -183,12 +185,14 @@ const ThreadRoot: FC<{ isEmpty: boolean }> = ({ isEmpty }) => {
 
           <div
             data-slot="aui_message-group"
-            className="mb-14 flex flex-col gap-y-6 empty:hidden"
+            className="mb-3 flex flex-col gap-y-6 empty:hidden"
           >
             <ThreadPrimitive.Messages>
               {() => <ThreadMessage />}
             </ThreadPrimitive.Messages>
           </div>
+          <WorkingIndicator />
+          <div className="min-h-8 grow" />
 
           <ThreadPrimitive.ViewportFooter
             className={cn(
@@ -219,6 +223,29 @@ const ThreadMessage: FC = () => {
   if (isEditing) return <EditComposer />;
   if (role === "user") return <UserMessage />;
   return <AssistantMessageComponent />;
+};
+
+const WorkingIndicator: FC = () => {
+  const visible = useAuiState((state) => state.thread.isRunning);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (!visible) return undefined;
+    const timer = window.setInterval(() => {
+      setTick((value) => value + 1);
+    }, 120);
+    return () => window.clearInterval(timer);
+  }, [visible]);
+
+  if (!visible) return null;
+  return (
+    <GenerationLoader
+      className="px-2 py-1.5"
+      label="工作中"
+      role="status"
+      tick={tick}
+    />
+  );
 };
 
 const ThreadScrollToBottom: FC = () => {
@@ -474,15 +501,7 @@ const AssistantMessage: FC = () => {
                   </div>
                 );
               case "indicator":
-                return (
-                  <span
-                    data-slot="aui_assistant-message-indicator"
-                    className="animate-pulse font-sans"
-                    aria-label="AI 正在处理"
-                  >
-                    {"●"}
-                  </span>
-                );
+                return <></>;
               default:
                 return null;
             }

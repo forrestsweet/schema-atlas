@@ -1,27 +1,44 @@
 "use client";
 
-import "@assistant-ui/react-markdown/styles/dot.css";
-
 import {
   type CodeHeaderProps,
   MarkdownTextPrimitive,
   unstable_memoizeMarkdownComponents as memoizeMarkdownComponents,
   useIsMarkdownCodeBlock,
 } from "@assistant-ui/react-markdown";
+import { useAuiState } from "@assistant-ui/react";
 import remarkGfm from "remark-gfm";
-import { type FC, memo, useState } from "react";
+import { type ComponentProps, type FC, memo, useMemo, useState } from "react";
 import { CheckIcon, CopyIcon } from "lucide-react";
 
 import { TooltipIconButton } from "@/components/assistant-ui/tooltip-icon-button";
+import { remarkStreamingWords } from "@/lib/markdown-streaming-words";
 import { cn } from "@/lib/utils";
 
+type MarkdownRemarkPlugins = NonNullable<
+  ComponentProps<typeof MarkdownTextPrimitive>["remarkPlugins"]
+>;
+
 const MarkdownTextImpl = () => {
+  const partType = useAuiState((state) => state.part.type);
+  const streaming = useAuiState(
+    (state) =>
+      (state.part.type === "text" || state.part.type === "reasoning") &&
+      state.part.status?.type === "running",
+  );
+  const remarkPlugins = useMemo<MarkdownRemarkPlugins>(
+    () => [remarkGfm, [remarkStreamingWords, { streaming }]],
+    [streaming],
+  );
+
   return (
     <MarkdownTextPrimitive
-      remarkPlugins={[remarkGfm]}
-      className="aui-md"
+      remarkPlugins={remarkPlugins}
+      className={cn(
+        "aui-md aui-md-streaming-text",
+        partType === "text" && "[&_p]:leading-7",
+      )}
       components={defaultComponents}
-      defer
     />
   );
 };

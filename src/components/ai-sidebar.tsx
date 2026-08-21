@@ -48,12 +48,7 @@ import {
 } from "@/lib/schema-pi-client";
 
 type Props = {
-  actionRequest?: {
-    id: string;
-    prompt: string;
-  };
   context: SchemaAgentContext;
-  onActionHandled?: (id: string) => void;
   onClose: () => void;
   selectedTableName?: string;
   workspaceId: string;
@@ -122,41 +117,6 @@ function ThreadBootstrap() {
       console.error("无法初始化 AI 会话", error);
     });
   }, [aui, isThreadListLoading, threadId, threadStatus]);
-
-  return null;
-}
-
-function RequestedActionBridge({
-  enabled,
-  onHandled,
-  request,
-}: {
-  enabled: boolean;
-  onHandled?: (id: string) => void;
-  request?: { id: string; prompt: string };
-}) {
-  const aui = useAui();
-  const isThreadListLoading = useAuiState((state) => state.threads.isLoading);
-  const threadStatus = useAuiState((state) => state.threadListItem.status);
-  const handledRef = useRef<string | undefined>(undefined);
-
-  useEffect(() => {
-    if (
-      !enabled ||
-      !request ||
-      isThreadListLoading ||
-      threadStatus === "new" ||
-      handledRef.current === request.id
-    ) {
-      return;
-    }
-    handledRef.current = request.id;
-    aui.thread.append({
-      role: "user",
-      content: [{ type: "text", text: request.prompt }],
-    });
-    onHandled?.(request.id);
-  }, [aui, enabled, isThreadListLoading, onHandled, request, threadStatus]);
 
   return null;
 }
@@ -505,9 +465,7 @@ function ModelDialog({
 }
 
 export function AiSidebar({
-  actionRequest,
   context,
-  onActionHandled,
   onClose,
   selectedTableName,
   workspaceId,
@@ -568,23 +526,12 @@ export function AiSidebar({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [configurationRevision, setConfigurationRevision] = useState(0);
-  const [dismissedRequestId, setDismissedRequestId] = useState<string>();
   const configured = client.isConfigured();
-  const configurationRequested = Boolean(
-    actionRequest &&
-      !configured &&
-      dismissedRequestId !== actionRequest.id,
-  );
 
   return (
     <AssistantRuntimeProvider runtime={runtime} config={assistantConfig}>
       <ThreadBootstrap />
       <ThreadTitleSync />
-      <RequestedActionBridge
-        enabled={configured}
-        onHandled={onActionHandled}
-        request={actionRequest}
-      />
       <aside className="flex h-full min-h-0 flex-col bg-background">
         <header className="flex h-12 shrink-0 items-center border-b px-3">
           {historyOpen ? (
@@ -662,14 +609,8 @@ export function AiSidebar({
 
       <ModelDialog
         client={client}
-        open={settingsOpen || configurationRequested}
-        onOpenChange={(open) => {
-          setSettingsOpen(open);
-          if (!open && actionRequest && !client.isConfigured()) {
-            setDismissedRequestId(actionRequest.id);
-            onActionHandled?.(actionRequest.id);
-          }
-        }}
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
         onSaved={() => setConfigurationRevision((value) => value + 1)}
       />
     </AssistantRuntimeProvider>
