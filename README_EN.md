@@ -102,3 +102,7 @@ Deleting a schema from the schema menu also removes its DDL, parsed result, and 
 ## Third-party software
 
 Schema Atlas combines established open-source projects. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+## License
+
+This project is open source under the [MIT License](LICENSE).

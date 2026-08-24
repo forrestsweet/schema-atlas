@@ -102,3 +102,7 @@ npm run build
 ## 第三方组件
 
 本项目组合了多个成熟的开源项目，详见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)。
+
+## 开源协议
+
+本项目基于 [MIT License](LICENSE) 开源。
