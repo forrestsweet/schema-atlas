@@ -1,6 +1,6 @@
 {
   "name": "schema-atlas",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Local-first MySQL schema visualization and AI analysis",
   "license": "MIT",
   "bin": {

@@ -1215,7 +1215,7 @@ export const SchemaGraph = forwardRef<SchemaGraphHandle, Props>(function SchemaG
             type: "grid-line",
             key: "canvas-dot-grid",
             border: false,
-            follow: { translate: true, zoom: true },
+            follow: { translate: true, zoom: false },
             lineWidth: 1,
             size: 28,
             stroke: "rgba(100, 116, 139, 0.1)",
